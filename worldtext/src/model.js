@@ -57,6 +57,15 @@ export function fromEnv(env = process.env) {
 export function anthropic({ apiKey, model = 'claude-sonnet-5', maxTokens = 1024 }) {
   return {
     name: `anthropic:${model}`,
+    model,
+    async listModels() {
+      const res = await fetch('https://api.anthropic.com/v1/models', {
+        headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      });
+      if (!res.ok) throw new Error(`models ${res.status}: ${(await res.text()).slice(0, 200)}`);
+      const j = await res.json();
+      return (j.data || []).map((m) => m.id).sort();
+    },
     async complete({ system, prompt, temperature = 0 }) {
       const res = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
@@ -82,6 +91,17 @@ export function anthropic({ apiKey, model = 'claude-sonnet-5', maxTokens = 1024 
 export function openAICompatible({ apiKey, baseURL, model, maxTokens = 1024 }) {
   return {
     name: `openai-compatible:${model}`,
+    model,
+    baseURL,
+    /** Ask the endpoint what it actually serves, so a model id is never a guess. */
+    async listModels() {
+      const res = await fetch(`${baseURL.replace(/\/$/, '')}/models`, {
+        headers: { authorization: `Bearer ${apiKey}` },
+      });
+      if (!res.ok) throw new Error(`models ${res.status}: ${(await res.text()).slice(0, 200)}`);
+      const j = await res.json();
+      return (j.data || []).map((m) => m.id).sort();
+    },
     async complete({ system, prompt, temperature = 0 }) {
       const res = await fetch(`${baseURL.replace(/\/$/, '')}/chat/completions`, {
         method: 'POST',
@@ -98,6 +118,24 @@ export function openAICompatible({ apiKey, baseURL, model, maxTokens = 1024 }) {
       return j.choices?.[0]?.message?.content || '';
     },
   };
+}
+
+/**
+ * Check the configured model really exists and really answers. Run this before
+ * trusting a run: a mistyped model id otherwise shows up as an escalation that
+ * quietly does nothing.
+ */
+export async function checkModel() {
+  const adapter = ADAPTER;
+  if (!adapter) return { ok: false, why: 'no model configured' };
+  try {
+    const text = await adapter.complete({ system: 'Reply with the single word: ready', prompt: 'ready?' });
+    return { ok: true, adapter: adapter.name, replied: String(text).trim().slice(0, 40) };
+  } catch (err) {
+    let available = null;
+    try { available = adapter.listModels ? (await adapter.listModels()).slice(0, 40) : null; } catch { /* endpoint may not list */ }
+    return { ok: false, adapter: adapter.name, why: String(err.message || err), available };
+  }
 }
 
 /** For tests: a deterministic stand-in that can be told exactly what to say. */

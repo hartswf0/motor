@@ -16,7 +16,7 @@ import { ask, asPerson, provenance, disputes, reasonsToVisit, namesIn } from './
 import { compileScene, writeback } from './src/scene.js';
 import { prose, film, timeline, map, playable } from './src/project.js';
 import { field } from './src/potential.js';
-import { fromEnv, getModel, modelUsage } from './src/model.js';
+import { fromEnv, getModel, modelUsage, checkModel } from './src/model.js';
 import { indexWithModel } from './src/parse.js';
 
 const dim = (s) => `\x1b[2m${s}\x1b[0m`;
@@ -64,6 +64,20 @@ async function handle(line) {
     console.log(`  ${c.statements} statements (${Object.entries(c.byEpistemic).map(([k, v]) => `${v} ${k.toLowerCase()}`).join(', ')})`);
     console.log(`  ${c.events} events, ${c.potentials} potentials, ${c.branches} branch(es), clock ${c.clock}`);
     if (getModel()) console.log(dim(`  model calls so far: ${JSON.stringify(modelUsage().escalations)}`));
+    return;
+  }
+
+  if (/^models?$/.test(l) || /^check model$/.test(l)) {
+    if (!getModel()) return console.log(dim('  no model configured; set OPENAI_API_KEY (and OPENAI_MODEL), ANTHROPIC_API_KEY, or OLLAMA_HOST'));
+    console.log(dim(`  checking ${getModel().name}…`));
+    const r = await checkModel();
+    if (r.ok) return console.log(`  ${cyan('ready')} — ${r.adapter} replied “${r.replied}”`);
+    console.log(dim(`  ${r.why}`));
+    if (r.available) {
+      console.log(dim('  models this key can reach:'));
+      for (const id of r.available) console.log(dim(`    ${id}`));
+      console.log(dim('  set the one you want:  export OPENAI_MODEL=<id>'));
+    }
     return;
   }
 
