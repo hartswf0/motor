@@ -1,0 +1,929 @@
+// THE GAUNTLET, headless.
+//
+// Professional tests, magic tests and the invariants each pass has established.
+// Every one of these ran green before any critic was allowed to score the build.
+//
+//   node tests/run.js            all
+//   node tests/run.js pro        one group
+
+import * as G from '../src/core/geom.js';
+import { buildPlace, PLACES } from '../src/places/index.js';
+import { World } from '../src/core/world.js';
+import { makeContext } from '../src/lang/deixis.js';
+import { interpret } from '../src/lang/interpret.js';
+import { plan, commitPlan } from '../src/world/ops.js';
+import { ask } from '../src/world/query.js';
+import { certify } from '../src/world/certificate.js';
+import { lexiconCollisions } from '../src/lang/lexicon.js';
+import { toGeoJSON, fromGeoJSON } from '../src/world/export.js';
+import { consequenceOf } from '../src/sim/consequence.js';
+import { runWater } from '../src/sim/water.js';
+import { reachability, buildGraph, route } from '../src/sim/movement.js';
+
+let passed = 0, failed = 0, groupName = '';
+const failures = [];
+const only = process.argv[2] || null;
+
+function group(name, fn) {
+  if (only && !name.toLowerCase().startsWith(only.toLowerCase())) return;
+  groupName = name;
+  console.log(`\n\x1b[1m${name}\x1b[0m`);
+  fn();
+}
+function test(name, fn) {
+  try {
+    fn();
+    passed++;
+    console.log(`  \x1b[32m✓\x1b[0m ${name}`);
+  } catch (err) {
+    failed++;
+    failures.push({ group: groupName, name, err });
+    console.log(`  \x1b[31m✗ ${name}\x1b[0m\n      ${err.message.split('\n').join('\n      ')}`);
+  }
+}
+function assert(cond, msg) { if (!cond) throw new Error(msg || 'assertion failed'); }
+function eq(a, b, msg) {
+  if (a === b) return;
+  // Fingerprints are long. Report the first line that differs, not the whole world.
+  if (typeof a === 'string' && typeof b === 'string' && (a.length > 300 || b.length > 300)) {
+    const la = a.split('\n'), lb = b.split('\n');
+    for (let i = 0; i < Math.max(la.length, lb.length); i++) {
+      if (la[i] !== lb[i]) {
+        throw new Error(`${msg || 'expected equal'}: first difference at line ${i + 1} of ${la.length}/${lb.length}\n  expected: ${(lb[i] || '<missing>').slice(0, 160)}\n  actual:   ${(la[i] || '<missing>').slice(0, 160)}`);
+      }
+    }
+  }
+  throw new Error(`${msg || 'expected equal'}: ${JSON.stringify(a)} !== ${JSON.stringify(b)}`);
+}
+function near(a, b, tol, msg) { if (Math.abs(a - b) > tol) throw new Error(`${msg || 'expected near'}: ${a} vs ${b} (tol ${tol})`); }
+
+// ---------------------------------------------------------------- helpers ---
+function say(world, text, ctxOverrides = {}, opts = {}) {
+  const ctx = makeContext(world, {
+    camera: { eye: [0, -120, 90], target: [0, 0, 0] },
+    ...ctxOverrides,
+  });
+  const intent = interpret(text, ctx);
+  intent.author = opts.author || 'tester';
+  const p = plan(world, intent, ctx);
+  return { intent, plan: p, ctx };
+}
+function sayAndCommit(world, text, ctxOverrides = {}, opts = {}) {
+  const r = say(world, text, ctxOverrides, opts);
+  if (r.plan.ghosts?.length || r.plan.removals?.length || r.plan.branchOps?.length || r.plan.patches?.length || r.plan.preserve?.length) {
+    r.commit = commitPlan(world, r.plan, { author: opts.author || 'tester' });
+  }
+  return r;
+}
+const codes = (p) => (p.certificate?.findings || []).map((f) => f.code);
+const byType = (w, t) => w.entities().filter((e) => e.type === t);
+
+// ============================================================== GEOMETRY ====
+group('geom — the substrate', () => {
+  test('area and centroid of a known rectangle', () => {
+    const r = G.rectRing(10, 5, 4, 2, 0);
+    near(G.area(r), 8, 1e-9, 'area');
+    const c = G.centroid(r);
+    near(c[0], 10, 1e-9); near(c[1], 5, 1e-9);
+  });
+  test('rotation preserves area', () => {
+    const r = G.rectRing(0, 0, 6, 3, 0.7);
+    near(G.area(r), 18, 1e-6);
+  });
+  test('polygons detect real overlap, not bbox overlap', () => {
+    const a = [[0, 0], [10, 0], [0, 10]];
+    const b = [[9, 9], [10, 9], [10, 10], [9, 10]];   // inside a's bbox, outside a
+    assert(G.bboxOverlap(G.bbox(a), G.bbox(b)), 'bboxes do overlap');
+    assert(!G.ringsIntersect(a, b), 'polygons must not report overlap');
+  });
+  test('containment and distance', () => {
+    const outer = G.rectRing(0, 0, 20, 20, 0);
+    const inner = G.rectRing(0, 0, 4, 4, 0);
+    assert(G.ringContains(outer, inner));
+    near(G.ringDistance(inner, G.rectRing(10, 0, 2, 2, 0)), 7, 1e-6, 'gap');
+  });
+  test('oriented bounds recover a rotated rectangle', () => {
+    const r = G.rectRing(3, -2, 8, 3, 0.5);
+    const ob = G.orientedBounds(r);
+    const dims = [ob.width, ob.depth].sort((a, b) => b - a);
+    near(dims[0], 8, 0.05); near(dims[1], 3, 0.05);
+  });
+  test('triangulation covers the polygon area', () => {
+    const r = [[0, 0], [10, 0], [10, 6], [4, 6], [4, 3], [0, 3]];   // L-shape
+    const tris = G.triangulate(r);
+    let a = 0;
+    for (let i = 0; i < tris.length; i += 3) {
+      a += Math.abs(G.signedArea([r[tris[i]], r[tris[i + 1]], r[tris[i + 2]]]));
+    }
+    near(a, G.area(r), 1e-6, 'triangulated area');
+  });
+  test('projection round-trips to WGS84', () => {
+    const p = G.makeProjection(-1.2361, 36.8791);
+    const [lat, lon] = p.toWGS84(120, -80);
+    const [x, y] = p.toLocal(lat, lon);
+    near(x, 120, 1e-6); near(y, -80, 1e-6);
+  });
+});
+
+// ================================================================= PLACES ====
+group('place — nine materially different environments', () => {
+  for (const def of PLACES) {
+    test(`${def.key}: builds, indexes, and holds together`, () => {
+      const w = buildPlace(def.key);
+      const ents = w.entities();
+      assert(ents.length > 3, `${def.key} has ${ents.length} entities`);
+      for (const e of ents) {
+        const ring = w.ringOf(e);
+        if (!ring) continue;
+        for (const p of ring) assert(Number.isFinite(p[0]) && Number.isFinite(p[1]), `NaN in ${e.id}`);
+        assert(e.zTop >= e.zBase - 1e-9, `${e.id} inverted vertical interval`);
+      }
+      assert(w.place.relations.length > 0, 'relations were derived');
+      assert(w.index.size() > 0, 'spatial index populated');
+    });
+  }
+  test('point+say works in every place, not just the city', () => {
+    for (const def of PLACES) {
+      const w = buildPlace(def.key);
+      const b = w.place.bounds();
+      const centre = [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2];
+      const r = say(w, 'this always floods when it rains', { pointer: centre });
+      eq(r.intent.operation, 'OBSERVE', `${def.key} observation`);
+      assert(r.plan.ghosts.length === 1, `${def.key} produced an observation`);
+    }
+  });
+});
+
+// ========================================================== PROFESSIONAL ====
+group('pro — the professional tests', () => {
+  test('PRO A · precision: "make this 5.25 m" means 5.25 m', () => {
+    const w = buildPlace('house');
+    const table = w.entities().find((e) => e.name === 'Table');
+    const before = G.orientedBounds(w.ringOf(table)).width;
+    assert(Math.abs(before - 5.25) > 1, 'starts at another size');
+    const r = sayAndCommit(w, 'make this 5.25 m', { selection: { ids: [table.id] } });
+    const after = G.orientedBounds(w.ringOf(w.get(table.id)));
+    near(Math.max(after.width, after.depth), 5.25, 0.01, 'longest dimension');
+  });
+
+  test('PRO B · snapping: generated form aligns with what is already there', () => {
+    const w = buildPlace('settlement');
+    const road = w.entities().find((e) => e.name === 'Baba Dogo Road');
+    const seg = G.norm(G.sub(road.path[1], road.path[0]));
+    const roadAngle = Math.atan2(seg[1], seg[0]);
+    const r = say(w, 'put a stall here', { pointer: [-10, -44] });
+    const ob = G.orientedBounds(w.place.ringOf(r.plan.ghosts[0]));
+    const diff = Math.abs(normalizeAngle(ob.angle - roadAngle)) % (Math.PI / 2);
+    assert(diff < 0.12 || Math.abs(diff - Math.PI / 2) < 0.12, `alignment off by ${diff.toFixed(3)} rad`);
+  });
+
+  test('PRO C · collision: an impossible overlap is detected and named', () => {
+    const w = buildPlace('settlement');
+    const house = w.entities().find((e) => e.type === 'structure');
+    const c = G.centroid(w.ringOf(house));
+    const r = say(w, 'build a building here', { pointer: c });
+    assert(codes(r.plan).includes('COLLISION'), `expected COLLISION, got ${codes(r.plan)}`);
+    const f = r.plan.certificate.findings.find((x) => x.code === 'COLLISION');
+    assert(f.others.includes(house.id), 'names the actual structure');
+    assert(f.message.includes('m²'), 'measures the overlap');
+    assert(!r.plan.certificate.valid, 'plan is not valid');
+  });
+
+  test('PRO C2 · no silent nudging: the conflicting proposal stays where it was pointed', () => {
+    const w = buildPlace('settlement');
+    const house = w.entities().find((e) => e.type === 'structure');
+    const c = G.centroid(w.ringOf(house));
+    const r = say(w, 'build a building here', { pointer: c });
+    const gc = G.centroid(w.place.ringOf(r.plan.ghosts[0]));
+    near(G.dist(gc, c), 0, 0.5, 'ghost was moved away from the conflict');
+  });
+
+  test('PRO D · network: a drain joins the drainage network, or says it does not', () => {
+    const w = buildPlace('school');
+    const drain = w.entities().find((e) => e.type === 'drain');
+    const joinAt = drain.path[1];
+    const good = say(w, 'we need a drain here', { selection: { stroke: [joinAt, [joinAt[0] + 6, joinAt[1] + 12]] }, pointer: joinAt });
+    assert(!codes(good.plan).includes('DISCONNECTED'), `joined drain flagged: ${codes(good.plan)}`);
+    const far = say(w, 'we need a drain here', { selection: { stroke: [[62, 52], [66, 40]] }, pointer: [62, 52] });
+    assert(codes(far.plan).includes('DISCONNECTED'), 'isolated drain must be flagged as decoration');
+  });
+
+  test('PRO E · save: reload reproduces the world exactly', () => {
+    const w = buildPlace('settlement');
+    sayAndCommit(w, 'this always floods', { pointer: [-18, 6] });
+    sayAndCommit(w, 'there should be trees here', { selection: { ring: G.circleRing(30, 20, 12, 16) } });
+    const before = w.fingerprint();
+    const w2 = World.load(w.save());
+    eq(w2.fingerprint(), before, 'fingerprint after reload');
+    eq(w2.journal.events.length, w.journal.events.length, 'event count');
+  });
+
+  test('PRO F · undo: 100 mixed human/AI operations reverse and replay exactly', () => {
+    const w = buildPlace('settlement');
+    const start = w.fingerprint();
+    const marks = [];
+    for (let i = 0; i < 100; i++) {
+      const x = -70 + (i * 13) % 140, y = -40 + (i * 29) % 90;
+      if (i % 4 === 0) {
+        sayAndCommit(w, 'this always floods', { pointer: [x, y] });
+      } else if (i % 4 === 1) {
+        sayAndCommit(w, 'put a bench here', { pointer: [x, y] });
+      } else if (i % 4 === 2) {
+        // a manual edit, made exactly the way a finger drag makes it
+        const bench = byType(w, 'bench')[0] || byType(w, 'tree')[0];
+        if (bench) {
+          const ring = w.ringOf(bench).map((p) => [p[0] + 0.5, p[1] + 0.25]);
+          w.updateEntity(bench.id, { footprint: ring }, { label: 'drag', author: 'hand' });
+        } else { sayAndCommit(w, 'put a bench here', { pointer: [x, y] }); }
+      } else {
+        sayAndCommit(w, 'there should be trees here', { selection: { ring: G.circleRing(x, y, 7, 12) } });
+      }
+      // Some utterances legitimately produce nothing (nowhere free). Keep the
+      // count honest by doing a real edit instead, so this is 100 operations.
+      if (w.journal.events.length < i + 1) {
+        const any = w.entities().find((e) => e.type === 'tree' || e.type === 'bench') || w.entities()[0];
+        w.updateEntity(any.id, { zTop: any.zTop + 0.01 }, { label: 'nudge height', author: 'hand' });
+      }
+      marks.push(w.fingerprint());
+    }
+    const end = w.fingerprint();
+    assert(w.journal.events.length >= 100, `only ${w.journal.events.length} events`);
+    const n = w.journal.events.length;
+    for (let i = 0; i < n; i++) w.undo();
+    eq(w.fingerprint(), start, 'world after full undo');
+    assert(!w.journal.canUndo(), 'nothing left to undo');
+    for (let i = 0; i < n; i++) w.redo();
+    eq(w.fingerprint(), end, 'world after full redo');
+  });
+
+  test('PRO G · scale: thousands of entities stay responsive', () => {
+    const w = buildPlace('block');
+    const t0 = Date.now();
+    let n = 0;
+    w.transact({ label: 'bulk', author: 'load-test' }, (j) => {
+      for (let i = 0; i < 3000; i++) {
+        const x = -110 + (i % 60) * 3.7, y = -95 + Math.floor(i / 60) * 3.9;
+        j.mutate({ op: 'add', entity: { id: `bulk_${i}`, type: 'furniture', footprint: G.rectRing(x, y, 1.2, 1.2, 0), zBase: 0, zTop: 0.8, collision: 'soft' } });
+        n++;
+      }
+    });
+    const build = Date.now() - t0;
+    assert(w.entities().length > 3000, 'entities present');
+    const t1 = Date.now();
+    for (let i = 0; i < 400; i++) w.index.near([-40 + (i % 50), -30 + (i % 37)], 8);
+    const queryMs = Date.now() - t1;
+    assert(queryMs < 400, `400 local queries took ${queryMs} ms`);
+    const t2 = Date.now();
+    w.entityAt([0, 0]);
+    assert(Date.now() - t2 < 60, 'point pick stays interactive');
+    console.log(`      (${n} entities, index+relations rebuild ${build} ms, 400 queries ${queryMs} ms)`);
+  });
+
+  test('PRO H · measurement is real and matches geometry', () => {
+    const w = buildPlace('house');
+    const shell = w.entities().find((e) => e.name === 'House');
+    const r = say(w, 'how wide is this?', { selection: { ids: [shell.id] } });
+    eq(r.intent.operation, 'ASK');
+    const m = say(w, 'measure this', { selection: { ids: [shell.id] } });
+    eq(m.intent.operation, 'MEASURE');
+    const part = m.plan.answer.parts[0];
+    near(part.area, G.area(w.ringOf(shell)), 1e-6, 'area matches geometry');
+    near(Math.max(part.width, part.depth), 12, 0.01, 'width matches');
+  });
+});
+
+function normalizeAngle(a) { while (a > Math.PI / 2) a -= Math.PI; while (a < -Math.PI / 2) a += Math.PI; return a; }
+
+// ================================================================= DEIXIS ====
+group('deixis — "here" must mean here', () => {
+  test('"this" with a selection resolves to that entity', () => {
+    const w = buildPlace('settlement');
+    const h = w.entities().find((e) => e.type === 'structure');
+    const r = say(w, 'make this taller', { selection: { ids: [h.id] } });
+    eq(r.intent.reference.ids[0], h.id);
+    assert(r.intent.reference.basis.includes('selection'));
+  });
+  test('"here" with a tap resolves to the tapped ground, not the camera', () => {
+    const w = buildPlace('settlement');
+    const r = say(w, 'water collects here', { pointer: [-18, 6] });
+    near(r.intent.reference.point[0], -18, 1e-9);
+    near(r.intent.reference.point[1], 6, 1e-9);
+  });
+  test('"here" with nothing indicated refuses to guess', () => {
+    const w = buildPlace('settlement');
+    const r = say(w, 'put a bench here', {});
+    eq(r.intent.reference.kind, 'none');
+    assert(r.plan.certificate.findings.some((f) => f.code === 'AMBIGUOUS_REFERENCE'));
+    assert(r.plan.summary.length > 0, 'asks a question instead');
+  });
+  test('"behind this" uses the camera to pick a side', () => {
+    const w = buildPlace('settlement');
+    const h = w.entities().find((e) => e.type === 'structure');
+    const c = G.centroid(w.ringOf(h));
+    const south = say(w, 'plant trees behind this', { selection: { ids: [h.id] }, camera: { eye: [c[0], c[1] - 60, 40], target: [c[0], c[1], 0] } });
+    const north = say(w, 'plant trees behind this', { selection: { ids: [h.id] }, camera: { eye: [c[0], c[1] + 60, 40], target: [c[0], c[1], 0] } });
+    assert(south.intent.reference.point[1] > c[1], 'from the south, behind is north');
+    assert(north.intent.reference.point[1] < c[1], 'from the north, behind is south');
+  });
+  test('"between those" makes the gap between two things', () => {
+    const w = buildPlace('settlement');
+    const [a, b] = w.entities().filter((e) => e.type === 'structure').slice(0, 2);
+    const r = say(w, 'a path between those', { selection: { ids: [a.id, b.id] } });
+    const ca = G.centroid(w.ringOf(a)), cb = G.centroid(w.ringOf(b));
+    const mid = G.lerp2(ca, cb, 0.5);
+    near(r.intent.reference.point[0], mid[0], 0.001);
+    near(r.intent.reference.point[1], mid[1], 0.001);
+  });
+  test('"the one next to it" walks the scene graph', () => {
+    const w = buildPlace('settlement');
+    const a = w.entities().filter((e) => e.type === 'structure')[3];
+    const r = say(w, 'make the one next to it taller', { selection: { ids: [a.id] } });
+    assert(r.intent.reference.ids.length === 1 && r.intent.reference.ids[0] !== a.id, 'picked a different neighbour');
+  });
+  test('"where we were before" reuses the previous resolution', () => {
+    const w = buildPlace('settlement');
+    const first = say(w, 'this always floods', { pointer: [-18, 6] });
+    const r = say(w, 'put a drain where we were before', {
+      utterances: [{ text: first.intent.original, resolved: first.intent.reference }],
+    });
+    near(r.intent.reference.point[0], first.intent.reference.point[0], 1e-9, 'same place as last time');
+    near(r.intent.reference.point[1], first.intent.reference.point[1], 1e-9);
+    assert(r.intent.reference.basis.includes('utterance-history'));
+  });
+  test('a circled region selects what is inside it, filtered by the noun', () => {
+    const w = buildPlace('settlement');
+    const ring = G.circleRing(46, 26, 22, 20);
+    const r = say(w, 'keep these trees', { selection: { ring } });
+    assert(r.intent.reference.ids.length > 0, 'found trees');
+    assert(r.intent.reference.ids.every((id) => w.get(id).type === 'tree'), 'only trees');
+  });
+  test('the resolution always explains itself', () => {
+    const w = buildPlace('settlement');
+    const r = say(w, 'this floods', { pointer: [-18, 6] });
+    assert(r.intent.explanation.includes('pointer'), r.intent.explanation);
+  });
+});
+
+// =========================================================== MULTILINGUAL ====
+group('language — English is not required', () => {
+  const cases = [
+    ['sw', 'hapa inafurika kila mvua', 'OBSERVE'],
+    ['es', 'aqui se inunda cuando llueve', 'OBSERVE'],
+    ['sw', 'tuweke miti hapa', 'PROPOSE'],
+    ['es', 'deberia haber arboles aqui', 'PROPOSE'],
+    ['fr', 'il devrait y avoir des arbres ici', 'PROPOSE'],
+    ['pt', 'precisamos de um dreno aqui', 'PROPOSE'],
+  ];
+  for (const [lang, text, op] of cases) {
+    test(`${lang}: "${text}" → ${op}`, () => {
+      const w = buildPlace('settlement');
+      const r = say(w, text, { pointer: [-18, 6] });
+      eq(r.intent.operation, op, `operation for ${text}`);
+      eq(r.intent.original, text, 'original expression preserved verbatim');
+      assert(r.intent.reference.point, 'resolved a location');
+    });
+  }
+  test('naming a thing is not asking for one', () => {
+    const w = buildPlace('settlement');
+    const cases = [
+      ['when the rain is bad, all of this fills with water', 'OBSERVE'],
+      ['people sell food here in the morning', 'OBSERVE'],
+      ['this path is where children walk', 'OBSERVE'],
+      ['there is water here every march', 'OBSERVE'],
+      ['there should be trees here', 'PROPOSE'],
+      ['we need a drain here', 'PROPOSE'],
+      ['trees here', 'PROPOSE'],
+      ['a bench here', 'PROPOSE'],
+    ];
+    for (const [text, op] of cases) {
+      const r = say(w, text, { pointer: [-18, 6] });
+      eq(r.intent.operation, op, `"${text}"`);
+    }
+  });
+
+  test('the original expression survives commit and is recoverable', () => {
+    const w = buildPlace('settlement');
+    const text = 'hapa inafurika kila mvua';
+    const r = sayAndCommit(w, text, { pointer: [-18, 6] });
+    const obs = byType(w, 'observation').find((e) => e.evidence?.[0]?.text === text);
+    assert(obs, 'observation carries the untranslated words');
+    const ev = w.journal.events.find((e) => e.utterance?.text === text);
+    assert(ev, 'transaction carries them too');
+  });
+});
+
+// ================================================================== MAGIC ====
+group('magic — the interactions that make the point', () => {
+  test('MAGIC A · "put a greenhouse here but don\'t block those windows"', () => {
+    const w = buildPlace('settlement');
+    const host = w.entities().find((e) => e.type === 'structure' && w.entities().some((o) => o.parent === e.id && o.type === 'opening'));
+    assert(host, 'a house with windows exists');
+    const windows = w.entities().filter((e) => e.parent === host.id && e.type === 'opening');
+    const r = say(w, "put a greenhouse here but don't block those windows", { selection: { ids: [host.id] } });
+    const g = r.plan.ghosts[0];
+    assert(g, 'greenhouse proposed');
+    eq(g.subtype, 'greenhouse');
+    near(g.zBase, host.zTop, 1e-6, 'sits on the roof, not the ground');
+    assert(g.zTop > g.zBase, 'has volume');
+    assert(r.plan.corridors.length === windows.length, `${r.plan.corridors.length} daylight corridors from ${windows.length} windows`);
+    for (const c of r.plan.corridors) {
+      assert(!G.ringsIntersect(w.place.ringOf(g), c.ring) || g.zBase >= c.zTop,
+        'the greenhouse must not stand in a window corridor');
+    }
+    assert(G.ringContains(w.ringOf(host), w.place.ringOf(g)), 'stays within the roof it was placed on');
+    // and it is ordinary geometry afterwards
+    const done = commitPlan(w, r.plan, { author: 'tester' });
+    const live = w.get(g.id);
+    assert(live && live.status === 'ACTIVE' && live.epistemic === 'PROPOSED', 'becomes a normal entity');
+  });
+
+  test('MAGIC B · a desire line is learned and later design must reckon with it', () => {
+    const w = buildPlace('settlement');
+    const stroke = [[-30, 17], [-10, 17.5], [10, 17], [25, 16.5]];
+    const r = sayAndCommit(w, 'people actually walk here', { selection: { stroke } });
+    const route = byType(w, 'path').find((e) => e.subtype === 'desire-line');
+    assert(route, 'observed route recorded');
+    eq(route.epistemic, 'OBSERVED');
+    // a later proposal that lands on it is told
+    const p = say(w, 'build a building here', { pointer: [14, 17] });
+    const f = p.plan.certificate.findings.find((x) => x.code === 'BLOCKS_ACCESS' && x.others.includes(route.id));
+    assert(f, `later design ignores the desire line: ${JSON.stringify(codes(p.plan))}`);
+  });
+
+  test('MAGIC C · "connect these" proposes a real, supported span', () => {
+    const w = buildPlace('settlement');
+    const [a, b] = w.entities().filter((e) => e.type === 'structure').slice(0, 2);
+    const r = say(w, 'connect these buildings', { selection: { ids: [a.id, b.id] } });
+    const g = r.plan.ghosts[0];
+    eq(g.type, 'bridge');
+    assert(g.props.ends.includes(a.id) && g.props.ends.includes(b.id), 'ends attach to the two buildings');
+    const span = G.dist(g.path[0], g.path[1]);
+    near(g.props.span, span, 1e-6);
+    assert(g.zBase > 1, 'deck is above the ground');
+    assert(r.plan.summary.includes('m span'), 'span and height are shown');
+  });
+
+  test('MAGIC D · three radically different futures, and the present survives', () => {
+    const w = buildPlace('settlement');
+    const before = w.entities().length;
+    const ring = G.circleRing(-18, 6, 16, 20);
+    const r = sayAndCommit(w, 'show three radically different futures for this', { selection: { ring } });
+    eq(r.plan.branchOps.length, 3);
+    const created = r.commit.branches;
+    eq(created.length, 3);
+    eq(w.entities().length, before, 'AS_IS is untouched');
+    const seen = new Set();
+    for (const bid of created) {
+      const view = w.view(bid);
+      assert(view.entities.length > before, `${bid} adds something`);
+      const added = view.entities.filter((e) => !w.place.entities.has(e.id));
+      assert(added.length > 0, `${bid} has its own geometry`);
+      seen.add(added.map((e) => e.type).sort().join(','));
+    }
+    assert(seen.size >= 2, `futures must differ in kind, saw ${[...seen]}`);
+  });
+
+  test('MAGIC E · merge grafts real entities from named branches', () => {
+    const w = buildPlace('settlement');
+    const ring = G.circleRing(-18, 6, 16, 20);
+    const b = sayAndCommit(w, 'show three radically different futures for this', { selection: { ring } });
+    const names = b.commit.branches.map((id) => w.place.branches.get(id).name);
+    const r = sayAndCommit(w, `combine the drain from ${names[0]} and the swale from ${names[1]}`, {});
+    assert(r.plan.branchOps.length === 1, 'one merged branch');
+    const merged = r.commit.branches[0];
+    const view = w.view(merged);
+    const grafted = view.entities.filter((e) => e.props?.graftedFrom);
+    assert(grafted.length >= 1, `nothing grafted (${r.plan.summary})`);
+    assert(new Set(grafted.map((e) => e.props.graftedFrom)).size >= 1, 'grafts carry their origin branch');
+  });
+
+  test('MAGIC F · "why can\'t this go here?" highlights the actual constraint', () => {
+    const w = buildPlace('settlement');
+    const house = w.entities().find((e) => e.type === 'structure');
+    const c = G.centroid(w.ringOf(house));
+    const r = say(w, 'why cant this go here?', { pointer: c });
+    eq(r.intent.operation, 'ASK');
+    const a = ask(w, r.intent, {});
+    assert(a.highlight.includes(house.id), 'points at the thing in the way');
+    assert(a.text.toLowerCase().includes('already there'), a.text);
+    assert(a.overlay?.alternative, 'offers where it would fit instead');
+  });
+
+  test('MAGIC G · "continue this pattern" continues from the CURRENT geometry', () => {
+    const w = buildPlace('settlement');
+    const gen = sayAndCommit(w, 'put a stall here', { pointer: [10, -20] });
+    const id = gen.plan.ghosts[0].id;
+    // a person drags it by hand
+    const moved = w.ringOf(w.get(id)).map((p) => [p[0] + 9, p[1] + 5]);
+    w.updateEntity(id, { footprint: moved }, { label: 'drag', author: 'hand' });
+    const handCentre = G.centroid(w.ringOf(w.get(id)));
+    const r = say(w, 'continue this pattern', { selection: { ids: [id] } });
+    assert(r.plan.ghosts.length >= 1, 'continuation proposed');
+    for (const g of r.plan.ghosts) {
+      const c = G.centroid(w.place.ringOf(g));
+      assert(G.dist(c, handCentre) < 30, 'continues from where the hand left it');
+      assert(G.dist(c, G.centroid(w.place.ringOf({ footprint: gen.plan.ghosts[0].footprint }))) > 6,
+        'not continuing from the stale generated position');
+      eq(g.props.continuedFrom, id);
+    }
+  });
+
+  test('MAGIC H · "who changed this?" answers in place', () => {
+    const w = buildPlace('settlement');
+    const r = sayAndCommit(w, 'put a bench here', { pointer: [4, 30] }, { author: 'Amina' });
+    const id = r.plan.ghosts[0].id;
+    const q = say(w, 'who changed this?', { selection: { ids: [id] } });
+    const a = ask(w, q.intent, {});
+    assert(a.text.includes('Amina'), a.text);
+    assert(a.highlight.includes(id));
+  });
+
+  test('MAGIC I · "why are you here?" recovers the whole chain', () => {
+    const w = buildPlace('settlement');
+    const r = sayAndCommit(w, 'there should be trees here', { selection: { ring: G.circleRing(30, 20, 10, 16) } }, { author: 'Miriam' });
+    const id = r.plan.ghosts[0].id;
+    const q = say(w, 'why are you here?', { selection: { ids: [id] } });
+    const a = ask(w, q.intent, {});
+    const row = a.rows[0];
+    eq(row.who, 'Miriam');
+    assert(row.how.includes('there should be trees here'), row.how);
+    eq(row.epistemic, 'PROPOSED');
+    assert(row.relations.length >= 0);
+  });
+});
+
+// ============================================================ CONSEQUENCE ====
+group('consequence — the place answers back, and the answer is computed', () => {
+  test('water finds the low ground without being told where it is', () => {
+    const w = buildPlace('settlement');
+    const res = runWater(w, { rain: 'heavy' });
+    assert(res.pondCount > 0, 'somewhere ponds');
+    const deepest = res.ponds[0];
+    const x = res.bounds[0] + (deepest.i + 0.5) * res.cell;
+    const y = res.bounds[1] + (deepest.j + 0.5) * res.cell;
+    assert(G.dist([x, y], [-18, 6]) < 26, `largest pond at ${x.toFixed(0)},${y.toFixed(0)} — expected the bowl`);
+  });
+
+  test('a drain along the real gradient reduces flooding; a wall does not', () => {
+    const w = buildPlace('settlement');
+    const drain = say(w, 'we need a drain here', { pointer: [-18, 6] });
+    const cd = consequenceOf(w, drain.plan);
+    const flood = cd.metrics.find((m) => m.key === 'flooding');
+    assert(flood, 'flooding measured');
+    assert(flood.delta > 0, `drain should reduce flooded area, got ${flood.delta.toFixed(1)}%`);
+
+    const wall = say(w, 'build a wall here', { pointer: [-18, 6] });
+    const cw = consequenceOf(w, wall.plan);
+    const f2 = cw.metrics.find((m) => m.key === 'flooding');
+    assert(!f2 || f2.delta <= flood.delta, 'a wall must not outperform a drain');
+  });
+
+  test('blocking a lane really does disconnect the network', () => {
+    const w = buildPlace('settlement');
+    const path = w.entities().find((e) => e.type === 'path' && e.path.length > 2);
+    const mid = path.path[1];
+    const p = say(w, 'build a building here', { pointer: mid });
+    const c = consequenceOf(w, p.plan);
+    const access = c.metrics.find((m) => m.key === 'access');
+    assert(access, 'connectivity measured');
+    assert(codes(p.plan).includes('BLOCKS_ACCESS'), 'and named in the certificate');
+  });
+
+  test('quantities are derived from geometry, not invented', () => {
+    const w = buildPlace('settlement');
+    const r = say(w, 'we need a drain here', { pointer: [-18, 6] });
+    const c = consequenceOf(w, r.plan);
+    const g = r.plan.ghosts[0];
+    const L = G.perimeter(g.path, false);
+    near(c.quantities.length_m, L, 0.5, 'length matches the line');
+    near(c.quantities.earthwork_m3, L * g.width * (g.props.depth), 0.5, 'earthwork matches section × length');
+  });
+
+  test('simulation never mutates the world', () => {
+    const w = buildPlace('settlement');
+    const before = w.fingerprint();
+    const r = say(w, 'what happens in heavy rain?', { pointer: [-18, 6] });
+    const q = ask(w, r.intent, {});
+    const sim = say(w, 'show heavy rain', { pointer: [-18, 6] });
+    eq(w.fingerprint(), before, 'world unchanged by asking or simulating');
+  });
+});
+
+// ================================================================ BRANCHES ===
+group('as-if — futures coexist', () => {
+  test('"show this without cars" leaves the present intact', () => {
+    const w = buildPlace('block');
+    // put some cars in first
+    w.transact({ label: 'seed cars', author: 'seed' }, (j) => {
+      for (let i = 0; i < 6; i++) {
+        j.mutate({ op: 'add', entity: { id: `car_${i}`, type: 'car', footprint: G.rectRing(-90 + i * 30, -92, 4.2, 1.8, 0), zBase: 0, zTop: 1.5, collision: 'soft' } });
+      }
+    });
+    const before = byType(w, 'car').length;
+    eq(before, 6);
+    const r = sayAndCommit(w, 'show this without cars', { selection: { ring: G.rectRing(0, 0, 240, 200, 0) } });
+    const bid = r.commit.branches[0];
+    eq(byType(w, 'car').length, 6, 'AS_IS still has its cars');
+    const view = w.view(bid);
+    eq(view.entities.filter((e) => e.type === 'car').length, 0, 'the branch has none');
+  });
+
+  test('branches inherit later AS_IS work through the overlay chain', () => {
+    const w = buildPlace('settlement');
+    const b = w.createBranch('AS_IF_test', { name: 'Test option' });
+    w.switchBranch('AS_IF_test');
+    sayAndCommit(w, 'put a bench here', { pointer: [0, 0] });
+    const inBranch = w.entities().length;
+    w.switchBranch('AS_IS');
+    assert(w.entities().length < inBranch, 'branch work does not leak into AS_IS');
+    sayAndCommit(w, 'put a bench here', { pointer: [30, 30] });
+    w.switchBranch('AS_IF_test');
+    assert(w.entities().length === inBranch + 1, 'branch sees new AS_IS work');
+  });
+
+  test('undo reverses a branch creation completely', () => {
+    const w = buildPlace('settlement');
+    const before = w.fingerprint();
+    const nBranches = w.place.branches.size;
+    sayAndCommit(w, 'show three radically different futures for this', { selection: { ring: G.circleRing(-18, 6, 14, 16) } });
+    assert(w.place.branches.size === nBranches + 3);
+    w.undo();
+    eq(w.place.branches.size, nBranches, 'branches removed');
+    eq(w.fingerprint(), before, 'world restored');
+  });
+});
+
+// ============================================================= PRESERVE ======
+group('preserve — the place can refuse', () => {
+  test('"keep these trees" makes a later proposal illegal rather than silent', () => {
+    const w = buildPlace('settlement');
+    const ring = G.circleRing(46, 26, 20, 20);
+    const keep = sayAndCommit(w, 'keep these trees', { selection: { ring } }, { author: 'Amina' });
+    assert(keep.plan.preserve.length > 0, 'something was protected');
+    const tree = w.get(keep.plan.preserve[0]);
+    const r = say(w, 'remove this', { selection: { ids: [tree.id] } });
+    assert(!r.plan.certificate.valid, 'removing a protected thing is refused');
+    const f = r.plan.certificate.findings[0];
+    assert(f.message.includes('protected'), f.message);
+  });
+
+  test('"keep everything except this wall" reads as preserve + remove', () => {
+    const w = buildPlace('house');
+    const wall = w.entities().find((e) => e.type === 'wall');
+    const r = say(w, 'keep everything except this wall', { selection: { ids: [wall.id] } });
+    eq(r.intent.operation, 'PRESERVE');
+    eq(r.intent.secondary, 'REMOVE');
+    assert(r.plan.removals.includes(wall.id), 'the wall goes');
+    assert(r.plan.preserve.length > 3, 'everything else is protected');
+    assert(!r.plan.preserve.includes(wall.id));
+  });
+});
+
+// ============================================================== INVARIANTS ===
+group('invariants — what must remain impossible', () => {
+  test('generated geometry cannot ignore previously generated geometry', () => {
+    const w = buildPlace('field');
+    const first = sayAndCommit(w, 'put a building here', { pointer: [0, 0] });
+    const a = first.plan.ghosts[0];
+    const second = say(w, 'put a building here', { pointer: G.centroid(w.ringOf(w.get(a.id))) });
+    assert(codes(second.plan).includes('COLLISION'), `generation 2 ignored generation 1: ${codes(second.plan)}`);
+    assert(second.plan.certificate.findings.some((f) => f.others.includes(a.id)), 'names generation 1');
+  });
+
+  test('manual edits are visible to later language operations', () => {
+    const w = buildPlace('field');
+    const r = sayAndCommit(w, 'put a building here', { pointer: [0, 0] });
+    const id = r.plan.ghosts[0].id;
+    w.updateEntity(id, { footprint: w.ringOf(w.get(id)).map((p) => [p[0] + 20, p[1]]) }, { label: 'drag', author: 'hand' });
+    const after = say(w, 'put a building here', { pointer: [20, 0] });
+    assert(codes(after.plan).includes('COLLISION'), 'the AI did not see the hand-moved building');
+    const stale = say(w, 'put a building here', { pointer: [0, 0] });
+    assert(!codes(stale.plan).includes('COLLISION'), 'the AI still thinks it is at the old place');
+  });
+
+  test('a new generation never deletes old work', () => {
+    const w = buildPlace('settlement');
+    const before = new Set(w.entities().map((e) => e.id));
+    for (let i = 0; i < 12; i++) sayAndCommit(w, 'there should be trees here', { selection: { ring: G.circleRing(-60 + i * 10, 40, 8, 12) } });
+    const after = new Set(w.entities().map((e) => e.id));
+    for (const id of before) assert(after.has(id), `${id} disappeared`);
+  });
+
+  test('the LLM layer cannot write geometry — only intents', () => {
+    const w = buildPlace('field');
+    const r = say(w, 'put a building here', { pointer: [0, 0] });
+    assert(!r.intent.footprint && !r.intent.ghosts, 'intent carries no geometry');
+    assert(r.plan.ghosts[0].footprint, 'geometry appears only in the plan');
+    assert(r.plan.ghosts[0].evidence[0].text === 'put a building here', 'and it cites the words that caused it');
+  });
+
+  test('every committed entity can say who made it and why', () => {
+    const w = buildPlace('settlement');
+    sayAndCommit(w, 'put a bench here', { pointer: [10, 10] }, { author: 'Joseph' });
+    for (const e of w.entities()) {
+      if (e.source === 'seed') continue;
+      assert(e.author, `${e.id} has no author`);
+      assert(w.journal.historyOf(e.id).length > 0, `${e.id} has no history`);
+    }
+  });
+
+  test('epistemic state distinguishes imported data from lived testimony', () => {
+    const w = buildPlace('settlement');
+    const disputed = w.entities().find((e) => e.epistemic === 'DISPUTED');
+    assert(disputed, 'a disputed claim ships with the place');
+    const lane = w.entities().find((e) => e.name === 'Cross path 0');
+    assert(lane && lane.epistemic === 'IMPORTED', 'and the official data it contradicts is still there');
+    assert(w.place.relations.some((r) => r.kind === 'disputedBy' && r.to === lane.id), 'both coexist');
+  });
+
+  test('relations are derived from geometry and survive a rebuild', () => {
+    const w = buildPlace('house');
+    const shell = w.entities().find((e) => e.name === 'House');
+    const room = w.entities().find((e) => e.type === 'room');
+    const inside = w.place.relations.some((r) => r.from === room.id && r.kind === 'inside' && r.to === shell.id);
+    assert(inside, 'a room is inside its house');
+    w.dirty = true;
+    w.reindex(true);
+    assert(w.place.relations.some((r) => r.from === room.id && r.kind === 'inside' && r.to === shell.id), 'still true after rebuild');
+  });
+});
+
+// ============================================ WHAT THE CRITIC COUNCIL BROKE ==
+// Round 1 of the council found eleven defects by running the system. Each one
+// is now a test, so it can only be broken again on purpose.
+group('council — regressions from critic round 1', () => {
+  test('the lexicon has no surface form claimed by two families', () => {
+    const c = lexiconCollisions();
+    assert(c.length === 0, `collisions: ${c.map((x) => `"${x.form}" in ${x.families.join('+')}`).join(', ')}`);
+  });
+
+  test('scenario phrasing reaches the scenario, not the question handler', () => {
+    const w = buildPlace('settlement');
+    const at = { pointer: [-18, 6] };
+    eq(say(w, 'what happens in heavy rain?', at).intent.operation, 'SIMULATE', 'what happens');
+    eq(say(w, 'show heavy rain', at).intent.operation, 'SIMULATE', 'show heavy rain');
+    eq(say(w, 'what if we remove the cars', at).intent.operation, 'BRANCH', 'what if');
+    // …and mentioning rain in testimony is still testimony
+    eq(say(w, 'it floods here every rain', at).intent.operation, 'OBSERVE', 'testimony');
+    eq(say(w, 'hapa inafurika kila mvua', at).intent.operation, 'OBSERVE', 'swahili testimony');
+  });
+
+  test('"taller" changes height, not width', () => {
+    const w = buildPlace('settlement');
+    const h = w.entities().find((e) => e.type === 'structure');
+    const before = { h: h.zTop - h.zBase, w: G.orientedBounds(w.ringOf(h)).width };
+    const r = sayAndCommit(w, 'make this 3 m taller', { selection: { ids: [h.id] } });
+    const after = w.get(h.id);
+    near(after.zTop - after.zBase, before.h + 3, 0.01, 'height');
+    near(G.orientedBounds(w.ringOf(after)).width, before.w, 0.01, 'width untouched');
+  });
+
+  test('an absurd dimension is capped, reported, and does not take the world down', () => {
+    const w = buildPlace('settlement');
+    const e = w.entities().find((e2) => e2.type === 'structure');
+    const r = say(w, 'make this 9999999 m taller', { selection: { ids: [e.id] } });
+    const g = r.plan.ghosts[0];
+    assert(g.zTop - g.zBase < 2000, `height was not capped: ${(g.zTop - g.zBase).toFixed(0)} m`);
+    assert(r.plan.certificate.findings.some((f) => /capped/.test(f.message)), 'the cap is stated, not silent');
+    commitPlan(w, r.plan, { author: 'tester' });          // must not throw
+    assert(w.entities().length > 0, 'world survives');
+  });
+
+  test('a surface cannot be laid across a building just because it is not solid', () => {
+    const w = buildPlace('settlement');
+    const house = w.entities().find((e) => e.type === 'structure');
+    const ring = w.ringOf(house).map((p) => p.slice());
+    const cert = certify(w, [{
+      id: 'adversarial_garden', type: 'surface', subtype: 'garden', footprint: ring,
+      zBase: house.zBase, zTop: house.zBase + 0.15, collision: 'none', sim: {},
+    }]);
+    assert(!cert.valid, 'a garden with a house\'s own footprint must not certify as valid');
+    assert(cert.findings.some((f) => f.others.includes(house.id)), 'and it must name the house');
+  });
+
+  test('every branch strategy is certified before it is offered', () => {
+    const w = buildPlace('settlement');
+    const r = sayAndCommit(w, 'show three radically different futures for this', { selection: { ring: G.circleRing(-18, 6, 16, 20) } });
+    assert(r.plan.branchOps.length >= 1, r.plan.summary);
+    for (const op of r.plan.branchOps) {
+      assert(op.certificate && op.certificate.valid, `${op.name} was offered with an invalid proposal`);
+      for (const g of op.ghosts) {
+        const ring = w.place.ringOf(g);
+        for (const other of w.entities()) {
+          if (other.collision !== 'solid') continue;
+          const or = w.ringOf(other);
+          if (!or || !G.ringsIntersect(ring, or)) continue;
+          // A grazed corner is a warning the certificate already reports; a
+          // strategy laid across a building is not allowed to be offered.
+          const inside = ring.filter((p) => G.pointInRing(p, or)).length;
+          assert(inside <= 1, `${op.name} runs through ${other.name || other.id}`);
+        }
+      }
+    }
+  });
+
+  test('ids are per place: loading one world cannot corrupt another', () => {
+    const a = buildPlace('field');
+    const b = buildPlace('field');
+    const e1 = b.addEntity({ type: 'structure', footprint: G.rectRing(10, 0, 4, 4, 0), zBase: 0, zTop: 3 }, { author: 't' });
+    const saved = a.save();
+    World.load(saved);                                    // the act that used to rewind the allocator
+    const e2 = b.addEntity({ type: 'structure', footprint: G.rectRing(30, 0, 4, 4, 0), zBase: 0, zTop: 3 }, { author: 't' });
+    assert(e1.id !== e2.id, `id collision after load: both ${e1.id}`);
+    assert(b.get(e1.id) && b.get(e2.id), 'both entities survive');
+  });
+
+  test('undoing the branch you are standing in leaves a world you can still use', () => {
+    const w = buildPlace('settlement');
+    w.createBranch('FUTURE', { name: 'Future' });
+    w.switchBranch('FUTURE');
+    sayAndCommit(w, 'put a bench here', { pointer: [0, 0] });
+    w.undo();                                             // the bench
+    w.undo();                                             // the branch itself
+    assert(w.place.branches.has(w.branch), `active branch ${w.branch} no longer exists`);
+    const e = w.addEntity({ type: 'bench', footprint: G.rectRing(5, 5, 1, 1, 0), zBase: 0, zTop: 0.5 }, { author: 't' });
+    assert(e && w.get(e.id), 'the world still accepts changes');
+  });
+
+  test('the fingerprint can tell two semantically different worlds apart', () => {
+    const w = buildPlace('field');
+    const ring = G.rectRing(0, 0, 6, 6, 0);
+    const a = w.addEntity({ type: 'structure', name: 'City Hall', material: 'concrete', author: 'city', footprint: ring, zBase: 0, zTop: 4 }, { author: 'city' });
+    const fpA = w.fingerprint();
+    w.updateEntity(a.id, { name: 'prank shed', material: 'cardboard', author: 'anon' }, { author: 'anon' });
+    assert(w.fingerprint() !== fpA, 'renaming and rebuilding a thing must change the fingerprint');
+  });
+
+  test('widening a rotated building still yields a rectangle', () => {
+    const w = buildPlace('rural');
+    const target = w.entities().find((e) => e.type === 'structure' && Math.abs(G.orientedBounds(w.ringOf(e)).angle) > 0.15);
+    assert(target, 'a rotated building exists');
+    const ob0 = G.orientedBounds(w.ringOf(target));
+    sayAndCommit(w, 'make this wider', { selection: { ids: [target.id] } });
+    const ring = w.ringOf(w.get(target.id));
+    const ob1 = G.orientedBounds(ring);
+    // orientedBounds may name either side "width", so compare the sorted pair
+    const before = [ob0.width, ob0.depth].sort((a, b) => a - b);
+    const after = [ob1.width, ob1.depth].sort((a, b) => a - b);
+    near(after[1], before[1], 0.05, 'the long side must not change');
+    assert(after[0] > before[0] + 0.5, `the short side must grow: ${before[0]} → ${after[0]}`);
+    // still a rectangle: its area equals its own oriented bounds
+    near(G.area(ring), ob1.width * ob1.depth, 0.05, 'sheared into a parallelogram');
+  });
+
+  test('a proposal far from any water does not move the flood number', () => {
+    const w = buildPlace('settlement');
+    const dry = [86, -62];       // outside the current bounds, on high dry ground
+    const r = say(w, 'put a bench here', { pointer: dry });
+    const c = consequenceOf(w, r.plan);
+    const flood = c.metrics.find((m) => m.key === 'flooding');
+    if (flood) assert(Math.abs(flood.delta) < 1.5, `a distant bench moved flooding by ${flood.delta.toFixed(1)}%`);
+  });
+
+  test('the place can leave the screen as GIS data, and come back unchanged', () => {
+    const w = buildPlace('settlement');
+    sayAndCommit(w, 'when the rain is bad, all of this fills with water', { pointer: [-18, 6] }, { author: 'Miriam' });
+    const fc = toGeoJSON(w);
+    assert(fc.features.length > 50, `only ${fc.features.length} features`);
+    eq(fc.crs.properties.name, 'urn:ogc:def:crs:OGC:1.3:CRS84');
+    // provenance travels with the geometry
+    const obs = fc.features.find((f) => f.properties.type === 'observation' && f.properties.author === 'Miriam');
+    assert(obs, 'the observation is exported');
+    assert(obs.properties.said.includes('fills with water'), 'with the words that caused it');
+    eq(obs.properties.epistemic, 'OBSERVED');
+    const lane = fc.features.find((f) => f.properties.disputed_by);
+    assert(lane, 'and a disputed claim stays marked as disputed');
+    // round trip through WGS84 and back
+    const back = fromGeoJSON(fc, w);
+    let worst = 0;
+    for (const f of back) {
+      const e = w.get(f.id);
+      const ring = w.ringOf(e);
+      if (!ring || f.local.length !== ring.length) continue;
+      for (let i = 0; i < ring.length; i++) worst = Math.max(worst, G.dist(ring[i], f.local[i]));
+    }
+    // Coordinates are written at 9 decimal places of a degree — about 0.1 mm.
+    // Anything under a millimetre is the writing precision, not a modelling error.
+    assert(worst < 1e-3, `round trip drifted by ${(worst * 1000).toFixed(3)} mm`);
+  });
+
+  test('"why are you here?" answers about the thing you tapped', () => {
+    const w = buildPlace('settlement');
+    const r = sayAndCommit(w, 'put a bench here', { pointer: [4, 30] }, { author: 'Amina' });
+    const id = r.plan.ghosts[0].id;
+    const c = G.centroid(w.ringOf(w.get(id)));
+    // exactly the app's own state after a tap: pointer AND selection both set
+    const q = say(w, 'why are you here?', { selection: { ids: [id] }, pointer: c });
+    const a = ask(w, q.intent, {});
+    assert(a.rows.length && a.rows[0].id === id, `answered about ${a.rows[0]?.id || 'nothing'}`);
+    assert(a.text.includes('Amina'), a.text);
+  });
+});
+
+// ================================================================== REPORT ===
+console.log(`\n${failed === 0 ? '\x1b[32m' : '\x1b[31m'}${passed} passed, ${failed} failed\x1b[0m`);
+if (failed) {
+  console.log('\nfailures:');
+  for (const f of failures) console.log(`  ${f.group} › ${f.name}\n    ${f.err.stack?.split('\n').slice(0, 3).join('\n    ')}`);
+  process.exit(1);
+}

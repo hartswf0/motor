@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>CREO</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<canvas id="world" aria-label="The place. Drag to look around, tap to select."></canvas>
+
+<!-- Everything below is chrome. It appears only when it has something to say. -->
+<header id="top">
+  <button id="placeChip" class="chip" aria-haspopup="listbox">
+    <span id="placeName">Baba Dogo</span><span class="caret">▾</span>
+  </button>
+  <div id="branchChip" class="chip branch" hidden>
+    <span id="branchName">As it is</span><span class="caret">▾</span>
+  </div>
+  <div class="spacer"></div>
+  <button id="authorChip" class="chip unset" aria-label="Who you are">
+    <span id="authorName">add your name</span>
+  </button>
+  <button id="undoBtn" class="icon" title="Undo" aria-label="Undo" disabled>↶</button>
+  <button id="redoBtn" class="icon" title="Redo" aria-label="Redo" disabled>↷</button>
+</header>
+
+<!-- Aiming point for anyone working without a pointing device. -->
+<div id="crosshair" hidden aria-hidden="true"></div>
+
+<div id="youAreHere" class="pill ghosted" hidden>you are here</div>
+
+<!-- Contextual actions. Nonverbal equivalents for everything language can do. -->
+<div id="tools" hidden role="toolbar" aria-label="What you can do with this">
+  <div id="toolTitle" class="toolTitle"></div>
+  <div class="row" id="toolRow"></div>
+</div>
+
+<!-- The proposal: shown before anything becomes real. -->
+<section id="proposal" hidden aria-live="polite">
+  <div class="head">
+    <h2 id="propTitle"></h2>
+    <button id="propClose" class="icon" aria-label="Discard">✕</button>
+  </div>
+  <p id="propSummary"></p>
+  <div id="propCert" class="cert"></div>
+  <div id="propImpact" class="impact"></div>
+  <div id="propAlts" class="alts"></div>
+  <div class="actions">
+    <button id="propDiscard" class="btn ghost">Discard</button>
+    <button id="propCommit" class="btn primary">Put it in the world</button>
+  </div>
+</section>
+
+<!-- The answer panel for questions asked of the place. -->
+<section id="answer" hidden aria-live="polite">
+  <div class="head">
+    <h2 id="ansTitle">The place says</h2>
+    <button id="ansClose" class="icon" aria-label="Close">✕</button>
+  </div>
+  <div id="ansBody"></div>
+</section>
+
+<!-- Branches: futures that coexist. -->
+<section id="branches" hidden>
+  <div class="head"><h2>Futures</h2><button id="brClose" class="icon" aria-label="Close">✕</button></div>
+  <div id="branchList"></div>
+  <div class="actions"><button id="compareBtn" class="btn ghost">Compare all</button></div>
+</section>
+
+<!-- The one invitation. -->
+<footer id="say">
+  <button id="modeDraw" class="icon mode" title="Draw an area or a line" aria-label="Draw">◌</button>
+  <input id="sayInput" type="text" autocomplete="off" enterkeyhint="go"
+         placeholder="Say something about this place" aria-label="Say something about this place">
+  <button id="micBtn" class="icon mic" title="Speak" aria-label="Speak">◉</button>
+</footer>
+
+<div id="toast" class="toast" hidden role="status"></div>
+<div id="labels" aria-hidden="false"></div>
+
+<script type="module" src="src/ui/app.js"></script>
+</body>
+</html>

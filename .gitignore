@@ -1,0 +1,8 @@
+node_modules/
+.DS_Store
+*.log
+_dbg*.mjs
+_smoke.mjs
+_p*.mjs
+_d*.mjs
+.claude/settings.local.json

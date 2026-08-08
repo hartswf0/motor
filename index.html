@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>MOTOR — CREO and WORLDTEXT</title>
+<style>
+  :root { color-scheme: dark light; --ink:#eef1f4; --dim:#98a2ac; --edge:rgba(255,255,255,.12); --accent:#58d9c4; --bg:#0e1014; }
+  @media (prefers-color-scheme: light) { :root { --ink:#12161b; --dim:#5b6670; --edge:rgba(0,0,0,.14); --accent:#0d7d6c; --bg:#f6f7f8; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.6 ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+  main { max-width: 720px; margin: 0 auto; padding: 12vh 24px 18vh; }
+  h1 { font-size: clamp(28px,6vw,44px); letter-spacing:-.02em; margin:0 0 6px; }
+  .sub { color:var(--dim); margin:0 0 48px; font-size:17px; }
+  a.card { display:block; text-decoration:none; color:inherit; border:1px solid var(--edge); border-radius:14px; padding:20px 22px; margin-bottom:16px; transition:border-color .15s, transform .15s; }
+  a.card:hover { border-color:var(--accent); transform:translateY(-1px); }
+  a.card h2 { margin:0 0 4px; font-size:19px; }
+  a.card .tag { color:var(--accent); font-size:12px; letter-spacing:.08em; text-transform:uppercase; }
+  a.card p { margin:8px 0 0; color:var(--dim); font-size:14.5px; }
+  .box { border:1px solid var(--edge); border-radius:14px; padding:18px 22px; margin-bottom:16px; }
+  .box h2 { margin:0 0 4px; font-size:19px; }
+  .box p { margin:8px 0 0; color:var(--dim); font-size:14.5px; }
+  code, pre { font-family: ui-monospace,SFMono-Regular,Menlo,monospace; font-size:13px; }
+  pre { background:rgba(127,127,127,.10); border:1px solid var(--edge); border-radius:10px; padding:12px 14px; overflow-x:auto; margin:12px 0 0; }
+  footer { margin-top:48px; color:var(--dim); font-size:13.5px; }
+  footer a { color:var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>MOTOR</h1>
+  <p class="sub">Two engines. One conviction: the substrate is not the picture.</p>
+
+  <a class="card" href="creo/">
+    <span class="tag">Runs in this browser</span>
+    <h2>CREO</h2>
+    <p>The place itself becomes conversationally operable. Point at somewhere, say
+    something ordinary, and it becomes persistent, editable, testable geometry —
+    which the place then argues with. 82 tests.</p>
+  </a>
+
+  <div class="box">
+    <span class="tag" style="color:var(--dim)">Terminal only, by design</span>
+    <h2>WORLDTEXT MOTOR</h2>
+    <p>The book was never content. The book was the dormant state of the world.
+    Ten thousand people can exist while exactly one wakes. No viewport — that is
+    the point of it. 36 tests.</p>
+    <pre>git clone https://github.com/hartswf0/motor
+cd motor/worldtext &amp;&amp; node motor.js</pre>
+  </div>
+
+  <footer>
+    Neither engine requires an API key. WORLDTEXT has a seam where one can
+    escalate the two jobs rules cannot do — parsing arbitrary prose, and speaking
+    in a character's own register — and anything a model produces enters as
+    <code>GENERATED</code>, never as source.
+    <br><br>
+    <a href="https://github.com/hartswf0/motor">Source on GitHub</a>
+  </footer>
+</main>
+</body>
+</html>

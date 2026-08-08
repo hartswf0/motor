@@ -1,0 +1,25 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Both suites must pass with no network and no API key. That is the claim.
+      - name: CREO — 82 invariants, magic tests, professional tests
+        run: node tests/run.js
+        working-directory: creo
+
+      - name: WORLDTEXT — 36 falsification tests
+        run: node tests/run.js
+        working-directory: worldtext

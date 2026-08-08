@@ -1,0 +1,11 @@
+{
+  "name": "creo",
+  "version": "0.1.0",
+  "description": "CREO — the place itself becomes conversationally operable.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "node tests/run.js",
+    "serve": "python3 -m http.server 8799 --bind 127.0.0.1"
+  }
+}

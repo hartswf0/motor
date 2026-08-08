@@ -1,0 +1,8 @@
+{
+  "name": "worldtext-motor",
+  "version": "0.1.0",
+  "description": "A body of description becomes a persistent, inhabitable, executable world without ceasing to be a body of description.",
+  "type": "module",
+  "private": true,
+  "scripts": { "test": "node tests/run.js", "demo": "node motor.js" }
+}
