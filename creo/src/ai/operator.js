@@ -305,22 +305,25 @@ export function validate(world, ops, digestObj) {
 /**
  * @returns {{reasoning, operations, refused, digest, raw}}
  */
-export async function proposeOperations(world, request, view) {
+export async function proposeOperations(world, request, view, opts = {}) {
   const cfg = getConfig();
   const d = digest(world, view);
-  const wantsVision = cfg.vision === 'always'
-    || (cfg.vision === 'auto' && (view.selection?.length || view.pointer
+  const visionMode = opts.vision || cfg.vision;
+  const wantsVision = visionMode === 'always'
+    || (visionMode === 'auto' && (view.selection?.length || view.pointer
         || /\b(this|that|here|there|looks|see|behind|beside|left|right)\b/i.test(request)));
   const prompt = [
     `Request: ${request}`,
+    opts.findings ? `\nWhat CREO has already established by looking:\n${opts.findings}` : '',
+    opts.critique ? `\nA previous attempt was rejected. The single largest problem was:\n${opts.critique}\nAddress that.` : '',
     '',
     'What is in view:',
     JSON.stringify(d, null, 1),
-  ].join('\n');
+  ].filter(Boolean).join('\n');
   const raw = await complete({
     system: SYSTEM, prompt,
     image: wantsVision ? view.image || null : null,
-    effort: effortFor(request, cfg.effort),
+    effort: opts.effort || effortFor(request, cfg.effort),
   });
   let parsed;
   try {
@@ -332,4 +335,39 @@ export async function proposeOperations(world, request, view) {
   }
   const { operations, refused } = validate(world, parsed.operations, d);
   return { reasoning: String(parsed.reasoning || '').slice(0, 240), operations, refused, digest: d, raw };
+}
+
+
+// ------------------------------------------------------------------ critic ---
+const CRITIC_SYSTEM = `You are an independent reviewer of a proposed change to a real place.
+
+You did not make this proposal and you must not assume it is good. You are shown the goal, the hard constraints, what the world's own models measured, and an image of the result as a participant would see it.
+
+Judge only what is in front of you. You have not been told the proposer's reasoning and must not imagine it.
+
+Return ONLY JSON:
+{"verdict":"PASS"|"FAIL","largestProblem":"<one sentence, or empty if PASS>","whatAParticipantWouldSee":"<one sentence>"}
+
+FAIL if any hard constraint is broken, if a measured consequence got worse, or if a participant looking at the image could not tell what changed or why. Say the single largest problem, not a list.`;
+
+/**
+ * A fresh judgement, with no memory of how the thing was made (§107). The
+ * builder does not get to grade itself, and it does not get to explain itself
+ * to the grader either.
+ */
+export async function critique({ goal, constraints = [], metrics = [], image = null, effort = 'max' }) {
+  const prompt = [
+    `Goal: ${goal}`,
+    constraints.length ? `Hard constraints:\n${constraints.map((c) => `- ${c}`).join('\n')}` : 'Hard constraints: none stated.',
+    metrics.length ? `What the world's models measured:\n${metrics.map((m) => `- ${m.label}: ${m.before} → ${m.after}`).join('\n')}` : 'No measurements available.',
+    image ? 'An image of the result is attached.' : 'No image is available; judge on the measurements alone.',
+  ].join('\n\n');
+  const raw = await complete({ system: CRITIC_SYSTEM, prompt, image, effort });
+  try {
+    return JSON.parse(String(raw).replace(/^```(?:json)?\s*|\s*```$/g, '').trim());
+  } catch {
+    const m = /\{[\s\S]*\}/.exec(raw);
+    if (m) { try { return JSON.parse(m[0]); } catch { /* fall through */ } }
+    return { verdict: 'FAIL', largestProblem: 'the reviewer did not return a usable judgement', whatAParticipantWouldSee: '' };
+  }
 }

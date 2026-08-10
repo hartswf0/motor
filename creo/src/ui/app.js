@@ -9,7 +9,9 @@ import * as G from '../core/geom.js';
 import { buildPlace, PLACES } from '../places/index.js';
 import { listImported, loadImported, attribution } from '../places/imported.js';
 import { openImportPanel, listCached, loadCached } from './importui.js';
-import { proposeOperations, hasKey, getConfig, setConfig, listModels, PROFILES, EFFORTS, lastCalls } from '../ai/operator.js';
+import { proposeOperations, critique, hasKey, getConfig, setConfig, listModels, EFFORTS, lastCalls } from '../ai/operator.js';
+import { MODES, MODE_ORDER, routeMode, STEP_LABELS } from '../ai/modes.js';
+import { investigate, summarise } from '../ai/investigate.js';
 import { Minimap, openLayers, openHelp, shouldShowHelp, hiddenTypes } from './chrome.js';
 import { runWater } from '../sim/water.js';
 import { toGeoJSON } from '../world/export.js';
@@ -53,8 +55,10 @@ const S = {
   dragging: null,
   dirty: true,
   compare: false,
-  assistant: false,
+  mode: 'auto',
   actingAs: null,
+  busy: false,
+  abort: false,
   labels: true,
   layersOff: new Set(),
   // NOT `plan` — that name already means the current proposal, and clearing a
@@ -583,12 +587,16 @@ function saySomething(text) {
 }
 
 $('sayInput').addEventListener('keydown', (ev) => {
-  if (ev.key === 'Enter') {
-    const v = ev.target.value;
-    ev.target.value = '';
-    if (S.assistant && hasKey()) runAssistant(v);
-    else saySomething(v);
-  }
+  if (ev.key !== 'Enter') return;
+  const v = ev.target.value;
+  ev.target.value = '';
+  if (!v.trim()) return;
+  if (!hasKey()) { saySomething(v); return; }
+  // The same sentence, at four different commitments.
+  const once = ev.metaKey ? 'gauntlet' : ev.altKey ? 'deep' : ev.shiftKey ? 'think' : null;
+  const previous = S.mode;
+  if (once) S.mode = once;
+  runAssistant(v).finally(() => { S.mode = previous; });
 });
 
 // speech, where it exists — never required
@@ -612,225 +620,188 @@ $('micBtn').addEventListener('click', () => {
  * says an ordinary sentence. Each operation runs through exactly the path a
  * human tap runs through, so its proposals still meet the certificate and still
  * wait for you to accept them.
+ *
+ * How hard it thinks is chosen by what was asked, not by a settings pane. And
+ * while it works, the world is the progress bar: the drains light up, the causal
+ * chain is traced, the rain actually runs.
  */
+function showWorking(mode, step) {
+  $('working').hidden = false;
+  $('workingMode').textContent = MODES[mode]?.label || mode;
+  $('workingStep').textContent = step;
+}
+function stopWorking() { $('working').hidden = true; S.busy = false; }
+$('workingStop').onclick = () => { S.abort = true; stopWorking(); toast('Stopped.'); };
+
 async function runAssistant(request) {
   if (!hasKey()) { openAIPanel(); return; }
-  toast('Looking…');
-  let result;
+  if (S.busy) { toast('Still working — press ■ to stop.'); return; }
+
+  const ctx = context();
+  const intent = interpret(request, ctx);
+  const chosen = S.mode === 'auto' ? routeMode(intent) : S.mode;
+  const mode = MODES[chosen];
+  S.busy = true; S.abort = false;
+  showWorking(chosen, STEP_LABELS.reading);
+
   try {
-    result = await proposeOperations(S.world, request, {
+    // 1. LOOK. Real queries, with real consequences on screen.
+    let findings = null;
+    if (mode.investigate) {
+      const res = await investigate(S.world, {
+        focus: [...S.selection], point: S.pointer, question: request,
+      }, (kind, visual) => {
+        if (S.abort) return;
+        showWorking(chosen, STEP_LABELS[kind] || kind);
+        if (visual.highlight) S.highlight = new Set(visual.highlight);
+        if (visual.overlay) S.overlay = visual.overlay;
+        if (visual.trace) S.overlay = { ...(S.overlay || {}), trace: visual.trace };
+        S.dirty = true;
+      });
+      if (S.abort) return;
+      findings = summarise(res.findings);
+    }
+
+    // 2. THINK.
+    showWorking(chosen, STEP_LABELS.asking);
+    const view = {
       camera: { target: S.cam.target, dist: S.cam.dist },
-      selection: [...S.selection],
-      pointer: S.pointer,
-      image: captureView(),
-    });
+      selection: [...S.selection], pointer: S.pointer, image: captureView(),
+    };
+    let result = await proposeOperations(S.world, request, view,
+      { effort: mode.effort, vision: mode.vision, findings });
+    if (S.abort) return;
+
+    // 3. GAUNTLET: build it, look at it, let a fresh critic attack it.
+    let verdict = null;
+    if (mode.gauntlet && result.operations.length) {
+      for (let round = 0; round < 2 && !S.abort; round++) {
+        showWorking(chosen, STEP_LABELS.building);
+        applyOperations(result.operations, chosen);
+        await frameSettled();
+        if (S.abort) return;
+
+        showWorking(chosen, STEP_LABELS.rendering);
+        const metrics = S.plan ? consequenceOf(S.world, S.plan).metrics : [];
+        const shot = captureView();
+
+        showWorking(chosen, STEP_LABELS.critic);
+        verdict = await critique({
+          goal: request,
+          constraints: (intent.constraints || []).map((c) => c.raw || c.kind),
+          metrics, image: shot, effort: mode.critic.effort,
+        });
+        if (S.abort) return;
+        if (verdict.verdict === 'PASS') break;
+
+        if (round === 0) {
+          showWorking(chosen, STEP_LABELS.revising);
+          discardProposal();
+          result = await proposeOperations(S.world, request, view,
+            { effort: mode.effort, vision: mode.vision, findings, critique: verdict.largestProblem });
+        }
+      }
+    } else {
+      applyOperations(result.operations, chosen);
+    }
+
+    stopWorking();
+    const said = result.reasoning || '';
+    if (!result.operations.length) { toast(said || 'Nothing here it could act on.'); return; }
+    if (verdict) {
+      toast(verdict.verdict === 'PASS'
+        ? `Reviewed and stands: ${verdict.whatAParticipantWouldSee || said}`
+        : `Still not right — ${verdict.largestProblem}. Shown anyway; judge for yourself.`);
+    } else if (said) toast(said);
   } catch (err) {
-    toast(`The assistant could not answer: ${String(err.message).slice(0, 90)}`);
-    return;
+    stopWorking();
+    toast(`Could not answer: ${String(err.message).slice(0, 100)}`);
+  } finally {
+    S.busy = false;
+    $('working').hidden = true;
   }
+}
 
-  const { reasoning, operations, refused } = result;
-  if (refused.length) console.warn('assistant operations refused:', refused);
-  if (!operations.length) {
-    toast(reasoning || 'The assistant found nothing here it could act on.');
-    return;
-  }
+/** Wait for one drawn frame, so a screenshot shows what was just done. */
+const frameSettled = () => new Promise((r) => { S.dirty = true; requestAnimationFrame(() => requestAnimationFrame(r)); });
 
+function discardProposal() {
+  S.plan = null; S.altIndex = -1;
+  hide('proposal');
+  S.dirty = true;
+}
+
+function applyOperations(operations, modeKey) {
   S.actingAs = `${S.author || 'you'} + assistant`;
-  const done = [];
   for (const op of operations) {
     switch (op.op) {
       case 'look':
         S.cam.target = [op.at[0], op.at[1], S.world.place.groundAt(op.at[0], op.at[1])];
         if (op.distance) S.cam.dist = Math.max(20, Math.min(2000, op.distance));
-        updateFidelity();
-        done.push('looked');
+        clampCamera(); updateFidelity();
         break;
-      case 'point':
-        S.pointer = op.at;
-        done.push(`pointed at ${op.at.map(Math.round).join(', ')}`);
-        break;
-      case 'select':
-        S.selection = new Set(op.ids);
-        done.push(`selected ${op.ids.map((id) => S.world.get(id)?.name || id).join(', ')}`);
-        break;
-      case 'circle':
-        S.stroke = op.points; S.strokeClosed = true;
-        S.pointer = G.centroid(op.points);
-        done.push(`circled ${G.area(op.points).toFixed(0)} m²`);
-        break;
-      case 'line':
-        S.stroke = op.points; S.strokeClosed = false;
-        done.push(`traced ${G.perimeter(op.points, false).toFixed(0)} m`);
-        break;
-      case 'note':
-        S.pointer = op.at;
-        saySomething(op.text);
-        done.push(`noted “${op.text.slice(0, 40)}”`);
-        break;
-      case 'say':
-        saySomething(op.text);
-        done.push(`said “${op.text.slice(0, 50)}”`);
-        break;
+      case 'point': S.pointer = op.at; break;
+      case 'select': S.selection = new Set(op.ids); break;
+      case 'circle': S.stroke = op.points; S.strokeClosed = true; S.pointer = G.centroid(op.points); break;
+      case 'line': S.stroke = op.points; S.strokeClosed = false; break;
+      case 'note': S.pointer = op.at; saySomething(op.text); break;
+      case 'say': saySomething(op.text); break;
     }
     S.dirty = true;
   }
   S.actingAs = null;
   showTools();
-  toast(`${reasoning ? reasoning + ' — ' : ''}${done.join('; ')}`);
 }
 
-/** A small JPEG of what the person is actually looking at. */
-function captureView(maxWidth = 1100, quality = 0.72) {
-  try {
-    const c = document.createElement('canvas');
-    const scale = Math.min(1, maxWidth / canvas.width);
-    c.width = Math.round(canvas.width * scale);
-    c.height = Math.round(canvas.height * scale);
-    c.getContext('2d').drawImage(canvas, 0, 0, c.width, c.height);
-    return c.toDataURL('image/jpeg', quality);
-  } catch { return null; }
+// ------------------------------------------------------------ mode chooser --
+function setMode_(key) {
+  S.mode = key;
+  const chip = $('modeChip');
+  chip.textContent = key === 'auto' ? '✦ Auto' : `✦ ${MODES[key].label}`;
+  chip.classList.toggle('set', key !== 'auto');
 }
 
-/** Where the key lives, and what that means. Said plainly rather than buried. */
-function openAIPanel() {
-  document.querySelector('.aiPanel')?.remove();
-  const cfg = getConfig();
-  const panel = document.createElement('div');
-  panel.className = 'menu aiPanel';
-  panel.style.right = '12px';
-  panel.style.bottom = 'calc(74px + var(--safe))';
-  panel.style.width = 'min(420px, calc(100vw - 24px))';
+function openModeMenu() {
+  document.querySelector('.modeMenu')?.remove();
+  const menu = document.createElement('div');
+  menu.className = 'menu modeMenu';
+  const r = $('modeChip').getBoundingClientRect();
+  menu.style.left = `${Math.max(8, r.left)}px`;
+  menu.style.bottom = `calc(${innerHeight - r.top + 8}px)`;
 
-  const head = document.createElement('div');
-  head.className = 'menuLabel';
-  head.textContent = 'Intelligence';
-
-  const note = document.createElement('div');
-  note.className = 'importStatus';
-  note.textContent = 'The key stays in this browser and goes straight to the provider. Anyone using this device can read it — for anything shared, put it behind your own server instead.';
-
-  const field = (labelText, el) => {
-    const w = document.createElement('label');
-    w.className = 'aiField';
-    const sp = document.createElement('span');
-    sp.textContent = labelText;
-    w.append(sp, el);
-    return w;
-  };
-
-  const key = document.createElement('input');
-  key.className = 'nameInput'; key.type = 'password'; key.placeholder = 'sk-…'; key.value = cfg.key || '';
-  key.setAttribute('aria-label', 'API key');
-
-  const base = document.createElement('input');
-  base.className = 'nameInput'; base.value = cfg.baseURL || 'https://api.openai.com/v1';
-  base.setAttribute('aria-label', 'Base URL');
-
-  // The model list is whatever this key can actually reach. CREO does not ship
-  // a list of model names it hopes are still current.
-  const model = document.createElement('select');
-  model.className = 'aiSelect';
-  model.setAttribute('aria-label', 'Model');
-  const setModels = (ids) => {
-    model.replaceChildren();
-    for (const id of ids) {
-      const o = document.createElement('option');
-      o.value = id; o.textContent = id;
-      if (id === cfg.model) o.selected = true;
-      model.append(o);
-    }
-    if (!cfg.model && ids.length) model.value = ids[0];
-  };
-  setModels(cfg.model ? [cfg.model] : ['— press Refresh to list your models —']);
-
-  const refresh = document.createElement('button');
-  refresh.className = 'tool'; refresh.textContent = 'Refresh';
-
-  const effort = document.createElement('select');
-  effort.className = 'aiSelect';
-  effort.setAttribute('aria-label', 'Reasoning effort');
-  for (const e of EFFORTS) {
-    const o = document.createElement('option');
-    o.value = e; o.textContent = e;
-    if (e === (cfg.effort || 'medium')) o.selected = true;
-    effort.append(o);
-  }
-
-  const vision = document.createElement('select');
-  vision.className = 'aiSelect';
-  vision.setAttribute('aria-label', 'Let it see the view');
-  for (const [v, l] of [['auto', 'When it needs to'], ['always', 'Always'], ['never', 'Never']]) {
-    const o = document.createElement('option');
-    o.value = v; o.textContent = l;
-    if (v === (cfg.vision || 'auto')) o.selected = true;
-    vision.append(o);
-  }
-
-  const profiles = document.createElement('div');
-  profiles.className = 'row';
-  profiles.style.padding = '0 6px 4px';
-  for (const p of PROFILES) {
+  const row = (key, label, hint) => {
     const b = document.createElement('button');
-    b.className = 'tool';
-    b.title = p.note;
-    b.textContent = p.label;
-    b.onclick = () => { effort.value = p.effort; vision.value = p.vision; save(); };
-    profiles.append(b);
-  }
-
-  const status = document.createElement('div');
-  status.className = 'importStatus';
-
-  const save = () => {
-    const provider = /anthropic/.test(base.value) || /^claude/.test(model.value) ? 'anthropic' : 'openai';
-    setConfig({
-      key: key.value.trim(), baseURL: base.value.trim(),
-      model: model.value.startsWith('—') ? '' : model.value,
-      effort: effort.value, vision: vision.value, provider, api: 'auto',
-    });
-    $('aiBtn').classList.toggle('on', hasKey());
-    status.textContent = `Using ${model.value} · ${effort.value} · sees the view ${vision.value}.`;
+    b.className = S.mode === key ? 'on' : '';
+    b.innerHTML = `<span>${label}</span><span class="mHint">${hint}</span>`;
+    b.onclick = () => { menu.remove(); setMode_(key); };
+    menu.append(b);
   };
-  for (const el of [model, effort, vision]) el.onchange = save;
-  key.onchange = save; base.onchange = save;
+  row('auto', 'Auto', 'let CREO judge how much this needs');
+  for (const k of MODE_ORDER) row(k, MODES[k].label, MODES[k].hint);
 
-  refresh.onclick = async () => {
-    setConfig({ key: key.value.trim(), baseURL: base.value.trim() });
-    status.textContent = 'asking your endpoint what it serves…';
-    try {
-      const ids = await listModels();
-      setModels(ids);
-      save();
-      status.textContent = `${ids.length} models available to this key.`;
-    } catch (err) {
-      status.textContent = String(err.message).slice(0, 160);
-    }
-  };
+  const dev = document.createElement('button');
+  dev.className = 'mHint';
+  dev.style.borderTop = '1px solid var(--edge)';
+  dev.style.marginTop = '4px';
+  dev.textContent = 'The machinery…';
+  dev.onclick = () => { menu.remove(); openAIPanel(); };
+  menu.append(dev);
 
-  const usage = document.createElement('div');
-  usage.className = 'importStatus';
-  const calls = lastCalls(5);
-  usage.textContent = calls.length
-    ? `Recent: ${calls.map((c) => `${c.model} ${c.effort} ${c.ms}ms${c.inTokens ? ` ${c.inTokens}→${c.outTokens}` : ''}${c.vision ? ' +view' : ''}`).join(' · ')}`
-    : 'No calls yet. Each one records model, effort, latency, tokens and whether it saw the view.';
-
-  panel.append(head, note, field('Key', key), field('Endpoint', base),
-    field('Model', model), refresh, field('Reasoning', effort), field('Sees the view', vision),
-    profiles, status, usage);
-  document.body.append(panel);
-  key.focus();
+  document.body.append(menu);
   setTimeout(() => document.addEventListener('pointerdown', function off(e) {
-    if (!panel.contains(e.target)) { panel.remove(); document.removeEventListener('pointerdown', off); }
+    if (!menu.contains(e.target) && e.target !== $('modeChip')) { menu.remove(); document.removeEventListener('pointerdown', off); }
   }), 0);
 }
 
-$('aiBtn').onclick = (ev) => {
-  if (ev.shiftKey || !hasKey()) return openAIPanel();
-  S.assistant = !S.assistant;
-  $('aiBtn').classList.toggle('on', S.assistant);
-  toast(S.assistant ? 'The assistant will work the interface for you. Say what you want.' : 'Back to your own hands.');
-};
+// tap chooses how hard to think; hold reaches the machinery underneath
+let holdTimer = null;
+$('modeChip').addEventListener('pointerdown', () => {
+  holdTimer = setTimeout(() => { holdTimer = null; openAIPanel(); }, 550);
+});
+$('modeChip').addEventListener('pointerup', () => {
+  if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; openModeMenu(); }
+});
+$('modeChip').addEventListener('pointerleave', () => { clearTimeout(holdTimer); holdTimer = null; });
 
 // ---------------------------------------------------------------- proposal --
 function showProposal(p) {
@@ -1495,6 +1466,7 @@ minimap = new Minimap($('planCanvas'), {
 $('plan').hidden = false;
 $('planBtn').classList.add('on');
 
+setMode_('auto');
 setAuthor(localStorage.getItem('creo.author') || '');
 loadPlace(localStorage.getItem('creo.place') || 'settlement');
 if (shouldShowHelp()) setTimeout(() => openHelp(), 600);
@@ -1509,7 +1481,7 @@ window.CREO = {
   interpret: (t) => interpret(t, context()),
   plan: (t) => { const c = context(); return plan(S.world, interpret(t, c), c); },
   select: (ids) => { S.selection = new Set(ids); S.dirty = true; showTools(); },
-  frameAll, openNote, openHelp,
+  frameAll, openNote, openHelp, runAssistant, setMode: setMode_,
   _minimap: () => minimap,
   pointAt: (p) => { S.pointer = p; },
   draw: (pts, closed) => { S.stroke = pts; S.strokeClosed = closed; S.dirty = true; },
