@@ -11,6 +11,10 @@ import { runWater } from '../sim/water.js';
 import { buildGraph, obstruction } from '../sim/movement.js';
 import { describeRelations } from '../core/relations.js';
 
+// A window is not a thing you find near you in a street. Parts of buildings are
+// reported by the building they belong to, not counted alongside it.
+const PART_TYPES = new Set(['opening', 'furniture', 'room', 'wall']);
+
 /**
  * @param {World} world
  * @param {{focus:string[], point:number[]|null, question:string}} situation
@@ -30,7 +34,7 @@ export async function investigate(world, situation, onStep = () => {}) {
 
   // 1. what is actually here
   if (at) {
-    const near = world.nearby(at, 60).slice(0, 12);
+    const near = world.nearby(at, 60).filter((h) => !PART_TYPES.has(h.entity.type)).slice(0, 12);
     const names = near.map((h) => h.entity.name || h.entity.use || h.entity.type);
     say('reading', `${near.length} things within 60 m: ${[...new Set(names)].slice(0, 6).join(', ')}.`, {
       highlight: near.map((h) => h.entity.id),
@@ -49,11 +53,16 @@ export async function investigate(world, situation, onStep = () => {}) {
       const z = world.place.groundAt(p[0], p[1]);
       if (z < lowest.z) lowest = { z, p };
     }
+    // A negative drop is not a drop. If everything around is higher, this spot is
+    // the low point itself, and that is the finding — not a "-0.4 m below".
+    const drop = here - lowest.z;
     say('terrain',
       slope.grade < 0.005
         ? `The ground here is almost flat (${(slope.grade * 100).toFixed(1)}%), so nothing drains itself.`
-        : `The ground falls ${(slope.grade * 100).toFixed(1)}% and the lowest ground within 60 m is ${(here - lowest.z).toFixed(1)} m below.`,
-      { trace: lowest.p ? [[at, lowest.p]] : [] });
+        : drop <= 0.05
+          ? `The ground falls ${(slope.grade * 100).toFixed(1)}%, but this spot is the lowest ground within 60 m — water arriving here has nowhere further to go.`
+          : `The ground falls ${(slope.grade * 100).toFixed(1)}% and the lowest ground within 60 m is ${drop.toFixed(1)} m below.`,
+      { trace: lowest.p && drop > 0.05 ? [[at, lowest.p]] : [] });
     await pause();
   }
 

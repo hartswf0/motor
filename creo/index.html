@@ -55,10 +55,35 @@
 <!-- Real places carry their licence where a person can see it, not in a file. -->
 <div id="attribution" hidden></div>
 
-<!-- Contextual actions. Nonverbal equivalents for everything language can do. -->
-<div id="tools" hidden role="toolbar" aria-label="What you can do with this">
-  <div id="toolTitle" class="toolTitle"></div>
+<!-- Circle or tap something and it becomes the subject: everything you say
+     after that is about it, and it can answer for itself. -->
+<div id="tools" hidden role="region" aria-label="About what you chose">
+  <div class="subjectHead">
+    <div id="toolTitle" class="toolTitle"></div>
+    <button id="subjectClose" class="icon small" aria-label="Let it go">✕</button>
+  </div>
+  <div id="subjectFacts" class="subjectFacts"></div>
   <div class="row" id="toolRow"></div>
+  <div id="subjectThread" class="thread" hidden></div>
+  <div class="subjectAsk">
+    <input id="subjectInput" type="text" autocomplete="off" enterkeyhint="send"
+           placeholder="Ask about this" aria-label="Ask about what you chose">
+    <button id="subjectSend" class="icon small" aria-label="Ask">↑</button>
+  </div>
+</div>
+
+<!-- Shown once, on the main page, when nothing can think yet. -->
+<div id="setup" hidden>
+  <div class="setupHead">Let CREO think<button id="setupClose" class="icon small" aria-label="Not now">✕</button></div>
+  <p>CREO already answers from the world without one. A key adds open-ended
+     questions and lets it work the interface for you. It stays in this browser.</p>
+  <input id="setupKey" type="password" placeholder="sk-…" aria-label="API key">
+  <div class="setupRow">
+    <select id="setupModel" aria-label="Model"><option>— add a key, then choose —</option></select>
+    <button id="setupRefresh" class="tool">Refresh</button>
+  </div>
+  <div id="setupStatus"></div>
+  <button id="setupDone" class="btn primary">Done</button>
 </div>
 
 <!-- The proposal: shown before anything becomes real. -->

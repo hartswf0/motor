@@ -17,6 +17,7 @@ import { runWater } from '../sim/water.js';
 import { toGeoJSON } from '../world/export.js';
 import { World } from '../core/world.js';
 import { makeContext } from '../lang/deixis.js';
+import { describeRelations } from '../core/relations.js';
 import { interpret } from '../lang/interpret.js';
 import { plan, commitPlan } from '../world/ops.js';
 import { ask } from '../world/query.js';
@@ -1002,14 +1003,173 @@ $('compareBtn').onclick = () => {
   showAnswer(intent, ask(S.world, intent, { compareBranches: [...S.world.place.branches.keys()] }));
 };
 
-// ------------------------------------------------------------------- tools --
+// ----------------------------------------------------------------- subject --
+
+// Windows, doors and furniture are parts of buildings, not contents of a piece
+// of ground. Counting them as "things in this area" is technically true and
+// humanly useless.
+const PART_TYPES = new Set(['opening', 'furniture', 'room', 'wall']);
+
+function entitiesInside(ring) {
+  return S.world.entities().filter((e) => {
+    if (PART_TYPES.has(e.type)) return false;
+    const r = S.world.ringOf(e);
+    return r && G.pointInRing(G.centroid(r), ring);
+  });
+}
+
+/** What is here, said the way a person would say it: named things by name, the
+ *  rest by kind and count. Never a list of internal ids. */
+function describeContents(list) {
+  if (!list.length) return 'Nothing is recorded inside this.';
+  const named = list.filter((e) => e.name && !/^(House|Building|Tree|Window) ?\d*$/.test(e.name));
+  const kinds = {};
+  for (const e of list) {
+    const k = e.use || e.subtype || e.type;
+    kinds[k] = (kinds[k] || 0) + 1;
+  }
+  const byKind = Object.entries(kinds).sort((a, b) => b[1] - a[1])
+    .map(([k, n]) => `${n} ${k}${n === 1 ? '' : 's'}`);
+  const lines = [`${list.length} things: ${byKind.join(', ')}.`];
+  if (named.length) lines.push(`By name: ${[...new Set(named.map((e) => e.name))].slice(0, 12).join(', ')}.`);
+  const said = list.filter((e) => e.type === 'observation');
+  if (said.length) lines.push(said.slice(0, 3).map((e) => `Someone said: \u201c${e.text || e.name}\u201d`).join('\n'));
+  return lines.join('\n');
+}
+// Circle something, or tap it, and it becomes the SUBJECT: a thing that holds
+// still while you talk about it. Everything typed here is about it, the answers
+// stack up under it, and it does not need a model to be useful — most of these
+// questions the world can answer out of its own record.
+
+const SUBJECT_ASKS = {
+  area: [
+    ['What is in here?', 'what is here?'],
+    ['Why does water collect?', 'why does water collect here?'],
+    ['What could go here?', 'what could go here?'],
+    ['It floods here', 'this always floods'],
+    ['Three futures', 'show three radically different futures for this'],
+  ],
+  line: [
+    ['Who walks this?', 'who walks here?'],
+    ['People walk here', 'people actually walk here'],
+    ['A path here', 'we need a path here'],
+    ['What does it cross?', 'what does this cross?'],
+  ],
+  thing: [
+    ['Why is it here?', 'why are you here?'],
+    ['Who changed it?', 'who changed this?'],
+    ['Does it flood?', 'does this flood?'],
+    ['Taller', 'make this taller'],
+    ['Keep', 'keep these'],
+    ['Remove', 'remove this'],
+    ['Three futures', 'show three radically different futures for this'],
+  ],
+};
+
+/** What is true about the subject, counted rather than guessed. */
+function subjectFacts() {
+  const ids = [...S.selection];
+  const out = [];
+  if (S.stroke && !ids.length) {
+    const inside = S.strokeClosed ? entitiesInside(S.stroke) : [];
+    out.push(S.strokeClosed
+      ? `${G.area(S.stroke).toFixed(0)} m², ${inside.length} thing${inside.length === 1 ? '' : 's'} inside`
+      : `${G.perimeter(S.stroke, false).toFixed(0)} m long`);
+    const kinds = {};
+    for (const e of inside) kinds[e.type] = (kinds[e.type] || 0) + 1;
+    const parts = Object.entries(kinds).sort((a, b) => b[1] - a[1]).slice(0, 4)
+      .map(([k, n]) => `${n} ${k}${n === 1 ? '' : 's'}`);
+    if (parts.length) out.push(parts.join(', '));
+    const at = S.strokeClosed ? G.centroid(S.stroke) : S.stroke[0];
+    if (S.world.place.terrain) {
+      const g = S.world.place.terrain.slopeAt(at[0], at[1]);
+      out.push(g.grade < 0.005 ? 'almost flat ground' : `ground falls ${(g.grade * 100).toFixed(1)}%`);
+    }
+    return out;
+  }
+  const e = ids.length === 1 && S.world.get(ids[0]);
+  if (!e) return [`${ids.length} things chosen`];
+  const ring = S.world.ringOf(e);
+  if (ring) out.push(`${G.area(ring).toFixed(0)} m², ${(e.zTop - e.zBase).toFixed(1)} m tall`);
+  out.push(`${String(e.epistemic || 'MODEL').toLowerCase()} · by ${e.provenance?.author || 'unknown'}`);
+  const rels = describeRelations(S.world.place, e.id).filter((r) => r.ids.length);
+  if (rels.length) out.push(rels.slice(0, 3).map((r) => `${r.kind} ${r.ids.length}`).join(', '));
+  return out;
+}
+
+function threadAdd(q, a, src) {
+  const t = $('subjectThread');
+  t.hidden = false;
+  const wrap = document.createElement('div');
+  const qd = document.createElement('div'); qd.className = 'q'; qd.textContent = q;
+  const ad = document.createElement('div'); ad.className = 'a'; ad.textContent = a;
+  wrap.append(qd, ad);
+  if (src) { const s = document.createElement('div'); s.className = 'src'; s.textContent = src; wrap.append(s); }
+  t.append(wrap);
+  t.scrollTop = t.scrollHeight;
+  liftPlan();
+}
+
+/**
+ * Ask about the subject. Without a key this is not a degraded mode: the world's
+ * own query layer answers why-questions, provenance and measurements directly,
+ * and DEEP-shaped questions run the real investigation. A key adds open-ended
+ * language on top of that, not instead of it.
+ */
+async function askSubject(text) {
+  if (!text.trim()) return;
+  $('subjectInput').value = '';
+  if (hasKey()) { threadAdd(text, '…', null); const t = $('subjectThread'); await runAssistant(text); t.lastChild?.remove(); return; }
+
+  const intent = interpret(text, context());
+
+  // "what is here?" about a drawn area is a contents question, and the world can
+  // answer it exactly. Ask's generic OBSERVE path answers with entity ids.
+  if (/^(what|who)('s| is| are)? ?(in |inside )?(here|this)\b/.test(text.trim().toLowerCase())) {
+    const list = S.strokeClosed && S.stroke ? entitiesInside(S.stroke)
+      : [...S.selection].map((id) => S.world.get(id)).filter(Boolean);
+    threadAdd(text, describeContents(list), 'counted from the place');
+    return;
+  }
+
+  if (['ASK', 'MEASURE', 'OBSERVE'].includes(intent.operation)) {
+    const deep = ['why', 'why-not', 'what-blocks', 'where-fit'].includes(intent.question?.kind);
+    if (deep) {
+      threadAdd(text, 'looking…', null);
+      const line = $('subjectThread').lastChild;
+      const { findings } = await investigate(S.world, {
+        focus: [...S.selection], point: S.pointer || (S.stroke && G.centroid(S.stroke)), question: text,
+      }, (kind, v) => {
+        line.querySelector('.a').textContent = STEP_LABELS[kind] || kind;
+        if (v.highlight) S.highlight = new Set(v.highlight);
+        if (v.overlay) S.overlay = v.overlay;
+        S.dirty = true;
+      });
+      line.querySelector('.a').textContent = summarise(findings) || 'Nothing to report here.';
+      line.querySelector('.src')?.remove();
+      const s = document.createElement('div'); s.className = 'src';
+      s.textContent = 'measured from the world — no model involved';
+      line.append(s);
+      return;
+    }
+    const a = ask(S.world, intent, {});
+    threadAdd(text, a.text || '—', 'from the place\u2019s own record');
+    return;
+  }
+  saySomething(text);
+  threadAdd(text, 'Proposed — see the panel below.', null);
+}
+
 function showTools() {
   const ids = [...S.selection];
   const row = $('toolRow');
   const title = $('toolTitle');
   row.replaceChildren();
 
-  if (!ids.length && !S.stroke) { hide('tools'); return; }
+  if (!ids.length && !S.stroke) {
+    hide('tools'); $('subjectThread').replaceChildren(); $('subjectThread').hidden = true;
+    liftPlan(); return;
+  }
 
   const mk = (text, fn, cls = '') => {
     const b = document.createElement('button');
@@ -1019,30 +1179,18 @@ function showTools() {
     return b;
   };
 
-  if (S.stroke && !ids.length) {
-    row.append(mk('Note here', () => openNote()));
-    title.textContent = S.strokeClosed
-      ? `${G.area(S.stroke).toFixed(0)} m² drawn — say what belongs here, or:`
-      : `${G.perimeter(S.stroke, false).toFixed(0)} m drawn — say what this is, or:`;
-    row.append(
-      mk(S.strokeClosed ? 'Trees here' : 'People walk here', () => saySomething(S.strokeClosed ? 'there should be trees here' : 'people actually walk here')),
-      mk(S.strokeClosed ? 'It floods here' : 'A path here', () => saySomething(S.strokeClosed ? 'this always floods' : 'we need a path here')),
-      mk('Clear', () => { S.stroke = null; S.dirty = true; showTools(); }),
-    );
-    show('tools');
-    return;
-  }
+  let kind = 'thing';
+  if (S.stroke && !ids.length) kind = S.strokeClosed ? 'area' : 'line';
+  title.textContent = kind === 'area' ? 'This area'
+    : kind === 'line' ? 'This line'
+      : ids.length === 1 ? labelFor(S.world.get(ids[0])) : `${ids.length} things`;
+  $('subjectFacts').textContent = subjectFacts().join(' · ');
+  $('subjectInput').placeholder = kind === 'thing' ? 'Ask about this' : `Ask about this ${kind}`;
 
-  const e = S.world.get(ids[0]);
-  title.textContent = ids.length === 1 ? labelFor(e) : `${ids.length} things selected`;
-
-  if (ids.length === 1 && e) {
-    const h = e.zTop - e.zBase;
-    row.append(
-      mk('Taller', () => quickEdit({ zTop: e.zBase + h + 1 }, 'raise')),
-      mk('Shorter', () => quickEdit({ zTop: e.zBase + Math.max(0.3, h - 1) }, 'lower')),
-    );
-    // precision, without a keyboard-only path
+  for (const [label, sentence] of SUBJECT_ASKS[kind]) row.append(mk(label, () => askSubject(sentence)));
+  row.append(mk('Note here', () => openNote(), 'note'));
+  if (kind === 'thing' && ids.length === 1) {
+    const e = S.world.get(ids[0]);
     const num = document.createElement('label');
     num.className = 'tool num';
     num.textContent = 'Set width';
@@ -1050,20 +1198,99 @@ function showTools() {
     inp.type = 'number'; inp.step = '0.05'; inp.inputMode = 'decimal';
     const ring = S.world.ringOf(e);
     inp.value = ring ? G.orientedBounds(ring).width.toFixed(2) : '';
-    inp.onchange = () => saySomething(`make this ${inp.value} m`);
+    inp.onchange = () => askSubject(`make this ${inp.value} m`);
     num.append(inp);
     row.append(num);
   }
-  row.append(
-    mk('Note here', () => openNote(), 'note'),
-    mk('Keep', () => saySomething('keep these'), 'keep'),
-    mk('Remove', () => saySomething('remove this')),
-    mk('Why is it here?', () => saySomething('why are you here?')),
-    mk('Who changed it?', () => saySomething('who changed this?')),
-  );
-  if (ids.length === 2) row.append(mk('Connect these', () => saySomething('connect these')));
-  row.append(mk('Three futures', () => saySomething('show three radically different futures for this')));
+  if (ids.length === 2) row.append(mk('Connect these', () => askSubject('connect these')));
   show('tools');
+  liftPlan();
+}
+
+// The panel grows while an investigation streams into it, so watch its size
+// rather than measuring once and hoping.
+new ResizeObserver(() => liftPlan()).observe($('tools'));
+
+/** Keep the plan clear of whatever the subject panel currently occupies. */
+function liftPlan() {
+  const t = $('tools');
+  document.body.classList.toggle('subject', !t.hidden);
+  // measure from the panel's actual top edge rather than adding up offsets, so
+  // this stays right however tall the thread grows
+  document.body.style.setProperty('--subjectH',
+    t.hidden ? '0px' : `${Math.round(innerHeight - t.getBoundingClientRect().top + 8)}px`);
+}
+
+$('subjectSend').onclick = () => askSubject($('subjectInput').value);
+$('subjectInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') askSubject(e.target.value);
+  if (e.key === 'Escape') e.target.blur();
+});
+$('subjectClose').onclick = () => {
+  S.selection.clear(); S.stroke = null; S.highlight.clear(); S.dirty = true;
+  $('subjectThread').replaceChildren();
+  showTools();
+};
+
+// ------------------------------------------------------------------- setup --
+// The key belongs on the page, not three gestures down. CREO works without one,
+// so this says so rather than blocking the door.
+
+function openAIPanel() {
+  const cfg = getConfig();
+  $('setupKey').value = cfg.key || '';
+  const sel = $('setupModel');
+  const status = $('setupStatus');
+  const setStatus = (m) => { status.textContent = m; };
+
+  const fill = (models, chosen) => {
+    sel.replaceChildren();
+    for (const m of models) {
+      const o = document.createElement('option');
+      o.value = m; o.textContent = m;
+      if (m === chosen) o.selected = true;
+      sel.append(o);
+    }
+  };
+  if (cfg.model) fill([cfg.model], cfg.model); else fill(['\u2014 add a key, then Refresh \u2014'], null);
+
+  async function refresh() {
+    const k = $('setupKey').value.trim();
+    if (!k) { setStatus('paste a key first'); return; }
+    setConfig({ key: k });
+    setStatus('asking the endpoint what it has\u2026');
+    try {
+      const all = await listModels();
+      // Rank by what this task actually needs: reasoning first, then recency.
+      const rank = (m) => (/^(gpt-5|o[34]|gpt-4\.1)/.test(m) ? 0 : /^gpt-4o/.test(m) ? 2 : 1);
+      const usable = all.filter((m) => !/embed|whisper|tts|dall|moderation|audio|realtime|image/.test(m))
+        .sort((a, b) => rank(a) - rank(b) || b.localeCompare(a));
+      fill(usable, cfg.model || usable[0]);
+      setStatus(`${usable.length} models \u2014 ${usable[0]} is the most capable this key can reach`);
+      if (!cfg.model) setConfig({ model: usable[0] });
+    } catch (err) {
+      setStatus(String(err.message).slice(0, 140));
+    }
+  }
+
+  $('setupRefresh').onclick = refresh;
+  $('setupKey').onchange = () => { setConfig({ key: $('setupKey').value.trim() }); refresh(); };
+  sel.onchange = () => { setConfig({ model: sel.value }); setStatus(`using ${sel.value}`); };
+  $('setupDone').onclick = () => {
+    const k = $('setupKey').value.trim();
+    if (k) setConfig({ key: k });
+    if (sel.value && !sel.value.startsWith('\u2014')) setConfig({ model: sel.value });
+    hide('setup');
+    localStorage.setItem('creo.sawSetup', '1');
+    setMode_(S.mode);
+    if (hasKey()) toast(`Ready \u2014 ${getConfig().model || 'model unset'}. Say anything about this place.`);
+  };
+  $('setupClose').onclick = () => { hide('setup'); localStorage.setItem('creo.sawSetup', '1'); };
+
+  $('setup').classList.toggle('tucked', $('tools').hidden);
+  show('setup');
+  if (cfg.key && !cfg.model) refresh();
+  else if (!cfg.key) $('setupKey').focus();
 }
 
 /**
@@ -1471,6 +1698,12 @@ setAuthor(localStorage.getItem('creo.author') || '');
 loadPlace(localStorage.getItem('creo.place') || 'settlement');
 if (shouldShowHelp()) setTimeout(() => openHelp(), 600);
 else if (!S.author) setTimeout(() => toast('Tap “add your name” at the top so the place can remember who changed what.'), 900);
+
+// Offer the key once, on the page, where it can be seen. CREO is useful without
+// one, so this is an offer rather than a gate — and it never asks twice.
+if (!hasKey() && !localStorage.getItem('creo.sawSetup') && !shouldShowHelp()) {
+  setTimeout(() => { if (!hasKey()) openAIPanel(); }, 1200);
+}
 requestAnimationFrame(frame);
 addEventListener('resize', () => { invalidate({ plan: true }); });
 
@@ -1482,6 +1715,7 @@ window.CREO = {
   plan: (t) => { const c = context(); return plan(S.world, interpret(t, c), c); },
   select: (ids) => { S.selection = new Set(ids); S.dirty = true; showTools(); },
   frameAll, openNote, openHelp, runAssistant, setMode: setMode_,
+  openSetup: openAIPanel, askSubject, showTools,
   _minimap: () => minimap,
   pointAt: (p) => { S.pointer = p; },
   draw: (pts, closed) => { S.stroke = pts; S.strokeClosed = closed; S.dirty = true; },

@@ -76,9 +76,44 @@ html, body {
 #tools {
   position: fixed; left: 12px; right: 12px; bottom: calc(84px + var(--safe));
   background: var(--panel); border: 1px solid var(--edge); border-radius: var(--radius);
-  padding: 10px 12px 12px; backdrop-filter: blur(14px);
+  padding: 10px 12px 10px; backdrop-filter: blur(14px);
+  max-height: 62vh; display: flex; flex-direction: column;
 }
-.toolTitle { font-size: 12px; color: var(--dim); margin-bottom: 8px; }
+.subjectHead { display: flex; align-items: flex-start; gap: 8px; }
+.toolTitle { font-size: 13px; color: var(--ink); font-weight: 600; margin-bottom: 4px; flex: 1; }
+.subjectFacts { font-size: 11.5px; color: var(--dim); margin-bottom: 9px; line-height: 1.45; }
+.thread { overflow-y: auto; margin: 8px 0 4px; display: grid; gap: 7px; }
+.thread .q { font-size: 12.5px; color: var(--accent); }
+.thread .a { font-size: 13px; color: var(--ink); white-space: pre-wrap; }
+.thread .src { font-size: 11px; color: var(--dim); }
+.subjectAsk { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
+#subjectInput {
+  flex: 1; height: 38px; padding: 0 12px; border-radius: 999px;
+  background: rgba(0,0,0,.35); border: 1px solid var(--edge); color: var(--ink); font: inherit; font-size: 13.5px;
+}
+#subjectInput:focus { outline: none; border-color: var(--accent); }
+
+/* Setup belongs on the page, not three gestures deep. */
+/* Anchored to the top: it is a first-run offer, and it must not land on the
+   subject panel a person is already using. */
+#setup {
+  position: fixed; left: 12px; right: 12px; top: calc(64px + var(--safe)); z-index: 20;
+  background: var(--panel); border: 1px solid var(--edge); border-radius: var(--radius);
+  padding: 14px 16px 16px;
+}
+@media (min-width: 760px) { #setup { left: auto; right: 16px; width: 400px; } }
+#setup.tucked { top: auto; bottom: calc(84px + var(--safe)); }
+.setupHead { display: flex; align-items: center; font-size: 15px; font-weight: 600; margin-bottom: 6px; }
+.setupHead .icon { margin-left: auto; }
+#setup p { font-size: 12.5px; color: var(--dim); margin: 0 0 10px; }
+#setup input, #setup select {
+  width: 100%; padding: 9px 11px; border-radius: 9px; font: inherit; font-size: 13.5px;
+  background: rgba(0,0,0,.35); border: 1px solid var(--edge); color: var(--ink); margin-bottom: 8px;
+}
+.setupRow { display: flex; gap: 8px; align-items: start; }
+.setupRow select { flex: 1; }
+.setupRow .tool { flex: none; height: 37px; }
+#setupStatus { font-size: 11.5px; color: var(--dim); min-height: 15px; margin-bottom: 8px; }
 .row { display: flex; gap: 8px; flex-wrap: wrap; }
 .tool {
   padding: 8px 12px; border-radius: 10px; font-size: 13px; cursor: pointer;
@@ -220,13 +255,18 @@ section p { margin: 0 0 10px; color: var(--dim); font-size: 13px; }
 }
 .icon.small { width: 34px; height: 34px; font-size: 14px; }
 
+/* The plan lifts out of the way when a subject is open, so a conversation is
+   never read through a map. */
 #plan {
   position: fixed; right: 12px; bottom: calc(74px + var(--safe)); z-index: 6;
+  transition: bottom .18s ease, opacity .18s ease;
   width: 168px; height: 168px; border-radius: 12px; overflow: hidden;
   background: rgba(10,12,16,.86); border: 1px solid var(--edge);
   box-shadow: 0 10px 30px rgba(0,0,0,.5);
 }
 @media (min-width: 760px) { #plan { width: 200px; height: 200px; } }
+body.subject #plan { bottom: var(--subjectH, calc(74px + var(--safe))); }
+@media (max-height: 720px) { body.subject #plan { opacity: .25; } }
 #planCanvas { width: 100%; height: 100%; display: block; cursor: crosshair; touch-action: none; }
 
 .layerPanel .tick { display: inline-block; width: 14px; color: var(--accent); }
