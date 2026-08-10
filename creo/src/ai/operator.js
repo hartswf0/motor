@@ -27,6 +27,10 @@ export function getConfig() {
   try {
     const cfg = { key: localStorage.getItem(KEY_STORE) || '', ...JSON.parse(localStorage.getItem(CFG_STORE) || '{}') };
     if (cfg.model && STALE_DEFAULTS.has(cfg.model) && !cfg.modelChosen) cfg.model = '';
+    // Until now a single 400 pinned the client to chat completions forever, so
+    // any stored choice made under that rule has to be forgotten rather than
+    // inherited — otherwise this browser never tries reasoning again.
+    if (cfg.api && !cfg.apiV2) { delete cfg.api; }
     return cfg;
   } catch { return { key: '' }; }
 }
@@ -41,6 +45,8 @@ export function setConfig(patch = {}) {
     // once a model is picked from the endpoint's own list it is a real choice
     modelChosen: patch.model ? true : (cfg.modelChosen ?? false),
     provider: patch.provider ?? cfg.provider ?? 'openai',
+    apiV2: true,
+    dropped: patch.dropped ?? cfg.dropped ?? [],
     effort: patch.effort ?? cfg.effort ?? 'medium',
     vision: patch.vision ?? cfg.vision ?? 'auto',
     api: patch.api ?? cfg.api ?? 'auto',
@@ -128,35 +134,78 @@ async function complete({ system, prompt, image = null, effort = null }) {
   const content = [{ type: 'input_text', text: prompt }];
   if (image) content.push({ type: 'input_image', image_url: image, detail: 'low' });
 
-  // The reasoning/responses surface where it exists, chat completions where it
-  // does not. Which one worked is remembered so the fallback is paid for once.
-  if (cfg.api !== 'chat') {
-    try {
-      const r = await fetch(`${base}/responses`, {
+  // Endpoints disagree about their own parameters, and the disagreement is
+  // model-specific: a reasoning model rejects temperature outright, an older one
+  // rejects `verbosity`, some want max_completion_tokens where others want
+  // max_tokens. Rather than maintain a table of which model tolerates what —
+  // which goes stale the week a new one ships — read the refusal and comply.
+  const dropped = new Set(cfg.dropped || []);
+
+  function prune(body) {
+    const out = { ...body };
+    for (const k of dropped) deleteDeep(out, k);
+    return out;
+  }
+  function deleteDeep(obj, path) {
+    const parts = path.split('.');
+    let o = obj;
+    for (let i = 0; i < parts.length - 1; i++) { o = o?.[parts[i]]; if (!o) return; }
+    delete o[parts[parts.length - 1]];
+  }
+
+  /**
+   * POST, and if the endpoint refuses one named parameter, stop sending that
+   * parameter — this time and every time after. Self-healing beats a lookup
+   * table, and the alternative is a 400 the person cannot act on.
+   */
+  async function post(url, body, tries = 4) {
+    for (let attempt = 0; attempt < tries; attempt++) {
+      const r = await fetch(url, {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
-        body: JSON.stringify({
-          model,
-          instructions: system,
-          input: [{ role: 'user', content }],
-          ...(effort || cfg.effort ? { reasoning: { effort: effort || cfg.effort } } : {}),
-          text: { verbosity: 'low' },
-        }),
+        body: JSON.stringify(prune(body)),
       });
-      if (r.ok) {
-        const j = await r.json();
-        record('responses', j.usage);
-        if (cfg.api !== 'responses') setConfig({ api: 'responses' });
-        const text = j.output_text
-          ?? (j.output || []).flatMap((o) => (o.content || []).filter((c) => c.type === 'output_text').map((c) => c.text)).join('');
-        if (text) return text;
-      } else if (r.status !== 404 && r.status !== 400) {
-        throw new Error(`${r.status}: ${(await r.text()).slice(0, 200)}`);
-      } else {
-        setConfig({ api: 'chat' });
-      }
-    } catch (err) {
-      if (!/fetch|404|400/i.test(String(err.message))) throw err;
+      if (r.ok) return r;
+      const text = await r.text();
+      if (r.status !== 400) return { ...r, ok: false, status: r.status, _text: text };
+
+      const fix = repairFor(text, body);
+      if (!fix) return { ok: false, status: 400, _text: text };
+      if (fix.rename) { body[fix.rename[1]] = body[fix.rename[0]]; }
+      dropped.add(fix.drop);
+      setConfig({ dropped: [...dropped] });
+      console.warn(`[CREO] ${model} refuses "${fix.drop}" — dropping it and retrying`);
+    }
+    return { ok: false, status: 400, _text: 'gave up repairing the request' };
+  }
+
+  const responsesBody = {
+    model,
+    instructions: system,
+    input: [{ role: 'user', content }],
+    ...(effort || cfg.effort ? { reasoning: { effort: effort || cfg.effort } } : {}),
+    text: { verbosity: 'low' },
+  };
+
+  // The reasoning surface where it exists, chat completions where it does not.
+  // ONLY a 404 or a failed connection means "not here". A 400 means this request
+  // was wrong, and answering that by permanently downgrading the endpoint — as
+  // this did — hides the real fault and costs every later call its reasoning.
+  if (cfg.api !== 'chat') {
+    let r = null;
+    try { r = await post(`${base}/responses`, responsesBody); } catch { r = null; }
+    if (r && r.ok) {
+      const j = await r.json();
+      record('responses', j.usage);
+      if (cfg.api !== 'responses') setConfig({ api: 'responses' });
+      const text = j.output_text
+        ?? (j.output || []).flatMap((o) => (o.content || []).filter((c) => c.type === 'output_text').map((c) => c.text)).join('');
+      if (text) return text;
+    } else if (r && r.status === 400) {
+      throw new Error(`400: ${String(r._text).slice(0, 200)}`);
+    } else if (r && r.status && r.status !== 404) {
+      throw new Error(`${r.status}: ${String(r._text).slice(0, 200)}`);
+    } else {
       setConfig({ api: 'chat' });
     }
   }
@@ -164,20 +213,52 @@ async function complete({ system, prompt, image = null, effort = null }) {
   const msgContent = image
     ? [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: image, detail: 'low' } }]
     : prompt;
-  const r2 = await fetch(`${base}/chat/completions`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
-    body: JSON.stringify({
-      model, temperature: 0,
-      response_format: { type: 'json_object' },
-      messages: [{ role: 'system', content: system }, { role: 'user', content: msgContent }],
-    }),
+  // No temperature. Determinism is not worth a parameter half the catalogue
+  // rejects, and the schema is what actually constrains the answer.
+  const r2 = await post(`${base}/chat/completions`, {
+    model,
+    response_format: { type: 'json_object' },
+    messages: [{ role: 'system', content: system }, { role: 'user', content: msgContent }],
   });
-  if (!r2.ok) throw new Error(`${r2.status}: ${(await r2.text()).slice(0, 200)}`);
+  if (!r2.ok) throw new Error(`${r2.status}: ${String(r2._text).slice(0, 200)}`);
   const j2 = await r2.json();
   record('chat', j2.usage);
   return j2.choices[0].message.content;
 }
+
+/**
+ * Read a 400 and work out which single parameter to stop sending.
+ * @returns {{drop:string, rename?:[string,string]}|null}
+ */
+export function repairFor(errorText, body = {}) {
+  let msg = errorText;
+  try { msg = JSON.parse(errorText).error?.message || errorText; } catch { /* plain text */ }
+  const lower = String(msg).toLowerCase();
+
+  // the endpoint often names the offending field outright
+  const named = String(errorText).match(/"param"\s*:\s*"([^"]+)"/)?.[1]
+    || lower.match(/unsupported (?:value|parameter): '([^']+)'/)?.[1]
+    || lower.match(/unknown parameter: '([^']+)'/)?.[1]
+    || lower.match(/'([a-z_.]+)' is not supported/)?.[1]
+    || lower.match(/unsupported_(?:value|parameter).*'([a-z_.]+)'/)?.[1];
+
+  // the one rename worth knowing: the parameter was not removed, it moved
+  if (named === 'max_tokens' || /use ['"]?max_completion_tokens/.test(lower)) {
+    return { drop: 'max_tokens', rename: ['max_tokens', 'max_completion_tokens'] };
+  }
+  if (named && has(body, named)) return { drop: named };
+  if (named === 'verbosity' || /verbosity/.test(lower)) return { drop: 'text.verbosity' };
+  if (/reasoning/.test(lower) && has(body, 'reasoning')) return { drop: 'reasoning' };
+  if (/response_format|json_object/.test(lower)) return { drop: 'response_format' };
+  if (/temperature/.test(lower)) return { drop: 'temperature' };
+  return null;
+}
+
+const has = (obj, path) => {
+  let o = obj;
+  for (const part of String(path).split('.')) { if (!o || !(part in o)) return false; o = o[part]; }
+  return true;
+};
 
 // ----------------------------------------------------------------- digest ---
 /**

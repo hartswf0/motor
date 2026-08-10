@@ -1672,9 +1672,15 @@ async function loadPlace(key) {
     if (saved) S.world = World.load(saved);
     else if (synthetic) S.world = buildPlace(key);
     else {
-      // a real place: either shipped with the repo, or pulled in by this browser
-      try { S.world = await loadImported(key); }
-      catch { S.world = await loadCached(key); }
+      // A real place is either shipped with the repo or was pulled into this
+      // browser. Ask the shipped index which it is rather than fetching a file
+      // that is usually absent — that 404 fired on every single load of every
+      // imported place, and a console full of expected errors is how a real one
+      // goes unnoticed.
+      const shipped = await listImported();
+      S.world = shipped.some((p) => p.key === key)
+        ? await loadImported(key)
+        : await loadCached(key);
     }
   } catch (err) {
     // Most often this is a place imported in another browser, or cleared

@@ -17,6 +17,7 @@ import { plan, commitPlan } from '../src/world/ops.js';
 import { ask } from '../src/world/query.js';
 import { certify } from '../src/world/certificate.js';
 import { lexiconCollisions } from '../src/lang/lexicon.js';
+import { repairFor } from '../src/ai/operator.js';
 import { toGeoJSON, fromGeoJSON } from '../src/world/export.js';
 import { consequenceOf } from '../src/sim/consequence.js';
 import { runWater } from '../src/sim/water.js';
@@ -1150,6 +1151,33 @@ group('references', () => {
       }
     }
     eq(bad.join('; '), '', 'a later key silently overwrites an earlier one');
+  });
+
+  // A 400 naming one parameter should cost that parameter, not the request and
+  // not the endpoint. These are the real refusals, verbatim.
+  test('an endpoint refusing a parameter is obeyed, not fought', () => {
+    const cases = [
+      [JSON.stringify({ error: { message: "Unsupported value: 'temperature' does not support 0.0 with this model. Only the default (1) value is supported.", type: 'invalid_request_error', param: 'temperature' } }),
+        { temperature: 0, model: 'x' }, 'temperature'],
+      [JSON.stringify({ error: { message: "Unknown parameter: 'text.verbosity'.", param: 'text.verbosity' } }),
+        { text: { verbosity: 'low' } }, 'text.verbosity'],
+      [JSON.stringify({ error: { message: "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.", param: 'max_tokens' } }),
+        { max_tokens: 100 }, 'max_tokens'],
+      [JSON.stringify({ error: { message: "'reasoning' is not supported with this model.", param: 'reasoning' } }),
+        { reasoning: { effort: 'high' } }, 'reasoning'],
+      [JSON.stringify({ error: { message: 'response_format json_object is not supported', param: 'response_format' } }),
+        { response_format: { type: 'json_object' } }, 'response_format'],
+    ];
+    for (const [text, body, expect] of cases) {
+      const fix = repairFor(text, body);
+      assert(fix, `no repair found for ${expect}`);
+      eq(fix.drop, expect, 'dropped the wrong parameter');
+    }
+    // max_tokens moved rather than vanished
+    eq(repairFor(cases[2][0], cases[2][1]).rename.join('->'), 'max_tokens->max_completion_tokens');
+    // and a refusal that names nothing must not be silently swallowed
+    eq(repairFor(JSON.stringify({ error: { message: 'You exceeded your quota.' } }), {}), null,
+      'a quota error is not a parameter to drop');
   });
 
   // and the ranking the interface promises
