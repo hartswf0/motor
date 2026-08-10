@@ -108,8 +108,15 @@ export function certify(world, ghosts, opts = {}) {
       if (!NETWORK_TYPES.has(other.type)) continue;
       const otherRing = world.ringOf(other);
       if (!otherRing || !G.ringsIntersect(ring, otherRing)) continue;
-      const clearsOver = g.zBase >= other.zTop + HEAD_CLEARANCE;
-      const clearsUnder = g.zTop <= other.zBase - 0.05;
+      // Evaluate height AT THE CROSSING, not globally. A graded trench is one
+      // entity with one [zBase, zTop] pair, but its bed falls along its length:
+      // comparing a 100 m drain's far-end invert against a lane sitting on high
+      // ground concluded the trench passed underneath, and said nothing.
+      const at = crossingPoint(world, ring, otherRing);
+      const gz = zSpanAt(world, g, at);
+      const oz = zSpanAt(world, other, at);
+      const clearsOver = gz[0] >= oz[1] + HEAD_CLEARANCE;
+      const clearsUnder = gz[1] <= oz[0] - 0.05;
       if (clearsOver || clearsUnder) {
         if (clearsOver && g.zBase < other.zTop + HEAD_CLEARANCE + 0.4) {
           findings.push(f('INSUFFICIENT_CLEARANCE', 'warning', g.id, [other.id],
@@ -228,6 +235,41 @@ export function certify(world, ghosts, opts = {}) {
 
 function f(code, severity, entity, others, message, measure = null) {
   return { code, severity, entity, others, message, measure };
+}
+
+/** A representative point where two footprints actually meet. */
+function crossingPoint(world, a, b) {
+  for (let i = 0, n = a.length; i < n; i++) {
+    for (let j = 0, m = b.length; j < m; j++) {
+      const hit = G.segIntersect(a[i], a[(i + 1) % n], b[j], b[(j + 1) % m]);
+      if (hit) return hit.point;
+    }
+  }
+  // fully contained: the centre of the smaller one is representative
+  return G.area(a) <= G.area(b) ? G.centroid(a) : G.centroid(b);
+}
+
+/**
+ * The vertical interval an entity actually occupies at a given point.
+ * For a graded linear feature this interpolates its invert along the line and
+ * sits it under the terrain there; for everything else the stored interval is
+ * already the truth.
+ */
+function zSpanAt(world, e, point) {
+  if (!e.path || e.path.length < 2) return [e.zBase, e.zTop];
+  const inv = e.props?.invert;
+  const ground = world.place.terrain ? world.place.groundAt(point[0], point[1]) : e.zTop;
+  if (!inv) return [Math.min(e.zBase, ground), Math.max(e.zTop, ground)];
+  let total = 0;
+  const segs = [];
+  for (let i = 0; i < e.path.length - 1; i++) { const d = G.dist(e.path[i], e.path[i + 1]); segs.push(d); total += d; }
+  const c = G.closestOnRing(point, e.path, false);
+  let before = 0;
+  for (let i = 0; i < (c.i ?? 0); i++) before += segs[i];
+  const along = before + (segs[c.i ?? 0] || 0) * (c.t ?? 0);
+  const frac = total > 0 ? Math.max(0, Math.min(1, along / total)) : 0;
+  const bed = inv[0] + (inv[1] - inv[0]) * frac;
+  return [bed, ground];                     // an open trench reaches the surface
 }
 
 export function label(e) {
