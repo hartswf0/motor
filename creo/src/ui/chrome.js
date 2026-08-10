@@ -10,7 +10,7 @@ import * as G from '../core/geom.js';
 export const LAYERS = [
   { key: 'buildings', label: 'Buildings', types: ['structure', 'wall', 'room', 'furniture'] },
   { key: 'streets', label: 'Streets & paths', types: ['road', 'path', 'rail', 'bridge'] },
-  { key: 'water', label: 'Water & drains', types: ['water', 'stream', 'drain'] },
+  { key: 'water', label: 'Rivers, ponds & sea', types: ['water', 'stream', 'drain'] },
   { key: 'ground', label: 'Land use', types: ['surface', 'parcel', 'region'] },
   { key: 'nature', label: 'Trees', types: ['tree'] },
   { key: 'places', label: 'Shops & stops', types: ['marker'] },

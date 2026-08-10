@@ -1,5 +1,56 @@
 [
   {
+    "key": "venice",
+    "name": "Cannaregio, Venice",
+    "bbox": [
+      45.43,
+      12.32,
+      45.44,
+      12.34
+    ],
+    "fetchedAt": "2026-08-10T19:30:00.770Z",
+    "scale": "district",
+    "counts": {
+      "buildings": 1811,
+      "roads": 4,
+      "paths": 3138,
+      "water": 189,
+      "surfaces": 87,
+      "trees": 439,
+      "walls": 1020,
+      "skipped": 230,
+      "markers": 1801
+    },
+    "relief": 13.3,
+    "source": "OpenStreetMap (ODbL)"
+  },
+  {
+    "key": "shore",
+    "name": "Nyali shore, Mombasa",
+    "bbox": [
+      -4.0662288896873875,
+      39.67374292969208,
+      -4.043771110312612,
+      39.69625707030792
+    ],
+    "fetchedAt": "2026-08-10T19:43:12.723Z",
+    "scale": "district",
+    "counts": {
+      "buildings": 1603,
+      "roads": 350,
+      "paths": 19,
+      "water": 6,
+      "surfaces": 101,
+      "trees": 83,
+      "walls": 7,
+      "skipped": 5,
+      "markers": 97,
+      "ocean": 1
+    },
+    "relief": 227.3,
+    "source": "OpenStreetMap (ODbL)"
+  },
+  {
     "key": "babadogo",
     "name": "Baba Dogo, Nairobi",
     "bbox": [
@@ -8,18 +59,18 @@
       -1.2325,
       36.8835
     ],
-    "fetchedAt": "2026-08-10T17:56:52.752Z",
+    "fetchedAt": "2026-08-10T19:49:52.569Z",
     "scale": "neighbourhood",
     "counts": {
-      "buildings": 392,
-      "roads": 88,
+      "buildings": 394,
+      "roads": 80,
       "paths": 1,
       "water": 1,
       "surfaces": 5,
       "trees": 0,
       "walls": 8,
       "skipped": 0,
-      "markers": 16
+      "markers": 18
     },
     "relief": 54.7,
     "source": "OpenStreetMap (ODbL)"

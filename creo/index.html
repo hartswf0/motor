@@ -38,16 +38,17 @@
   <button id="fitBtn" class="icon small" title="Show the whole place (F)" aria-label="Show the whole place">⤢</button>
   <button id="planBtn" class="icon small" title="Plan (M)" aria-label="Toggle the plan">▣</button>
   <button id="layersBtn" class="icon small" title="What to show" aria-label="Layers">◈</button>
-  <button id="rainBtn" class="icon small" title="Show where water goes (R)" aria-label="Show water">☂</button>
+  <button id="rainBtn" class="icon small" title="Simulate heavy rain (R) — rivers and ponds are always shown" aria-label="Simulate rain">☂</button>
   <button id="exportBtn" class="icon small" title="Take it away — export" aria-label="Export">↧</button>
   <button id="helpBtn" class="icon small" title="Help (?)" aria-label="Help">?</button>
 </div>
 
 <div id="waterLegend" hidden>
-  <div class="legendTitle">Water after an hour of heavy rain</div>
+  <div class="legendTitle">Flood simulation — an hour of heavy rain</div>
   <div class="legendScale"><i style="background:#6bb8eb"></i><i style="background:#4c9ad9"></i><i style="background:#2f7bc4"></i><i style="background:#1f5ca8"></i></div>
   <div class="legendEnds"><span>5&nbsp;cm</span><span id="legendMax">45&nbsp;cm</span></div>
   <div class="legendNote" id="legendNote"></div>
+  <div class="legendNote">This is temporary water on top of the world. Rivers, ponds and the sea are permanent and always drawn.</div>
 </div>
 
 <div id="youAreHere" class="pill ghosted" hidden>you are here</div>

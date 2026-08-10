@@ -118,6 +118,9 @@ export class World {
 
   // -------------------------------------------------------------- persist ---
   save() {
+    // Rounding here would mean a reloaded world differed from the one saved,
+    // which breaks the invariant the whole history depends on. Imported data is
+    // rounded on the way IN instead, where it is honest about its own precision.
     return JSON.stringify({
       version: 1,
       place: this.place.toJSON(),

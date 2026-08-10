@@ -9,7 +9,7 @@ import * as G from '../core/geom.js';
 import { buildPlace, PLACES } from '../places/index.js';
 import { listImported, loadImported, attribution } from '../places/imported.js';
 import { openImportPanel, listCached, loadCached } from './importui.js';
-import { proposeOperations, hasKey, getConfig, setConfig, listModels } from '../ai/operator.js';
+import { proposeOperations, hasKey, getConfig, setConfig, listModels, PROFILES, EFFORTS, lastCalls } from '../ai/operator.js';
 import { Minimap, openLayers, openHelp, shouldShowHelp, hiddenTypes } from './chrome.js';
 import { runWater } from '../sim/water.js';
 import { toGeoJSON } from '../world/export.js';
@@ -25,6 +25,11 @@ import { pick, rayToGround } from '../render/pick.js';
 
 const $ = (id) => document.getElementById(id);
 const canvas = $('world');
+
+// A 3x phone turns a 430x932 screen into 1290x2796 pixels before a single
+// triangle is drawn. Cap it; nobody can see the difference on a map.
+export const MOBILE = matchMedia('(pointer: coarse)').matches || innerWidth < 760;
+const DPR_CAP = MOBILE ? 1.35 : 1.8;
 
 // ------------------------------------------------------------------- state --
 const S = {
@@ -58,6 +63,7 @@ const S = {
 };
 
 const renderer = new Renderer(canvas);
+renderer.dprCap = DPR_CAP;
 
 // ------------------------------------------------------------------ camera --
 function eye() {
@@ -143,19 +149,35 @@ function currentGhosts() {
 }
 
 let minimap = null;
-let planTick = 0;
 let frameErrors = 0;
+let planDirty = true;
+let lastInputAt = 0;
+export const stats = { drawn: 0, skipped: 0, labels: 0 };
+
+/** Something changed; the next frame should actually draw. */
+function invalidate({ plan = false } = {}) {
+  S.dirty = true;
+  if (plan) planDirty = true;
+}
+/** A gesture is in flight, so keep drawing until it settles. */
+const animating = () => Date.now() - lastInputAt < 220;
+
+let frameErrorsShown = 0;
 function frame() {
   // One bad frame used to kill the loop outright: rendering froze while the
   // world went on changing underneath, which looks like everything breaking at
   // once. Report it and keep drawing.
   try {
+    // A world editor is not a game. When nothing has changed there is nothing
+    // to draw, and drawing it anyway spends a phone's battery on a still image.
+    if (!S.dirty && !animating()) { stats.skipped++; requestAnimationFrame(frame); return; }
     if (S.dirty) rebuild();
     renderer.draw(viewProj());
     drawLabels();
-    // The plan changes slowly; no reason to redraw it sixty times a second.
-    if (minimap && S.showPlan && (planTick++ % 6 === 0)) {
+    stats.drawn++;
+    if (minimap && S.showPlan && planDirty) {
       minimap.draw(S.world, { camera: S.cam, selection: S.selection, hidden: hiddenTypes(S.layersOff) });
+      planDirty = false;
     }
   } catch (err) {
     if (frameErrors++ < 3) {
@@ -226,10 +248,18 @@ function drawLabels() {
     { x0: 0, y0: innerHeight - 110, x1: innerWidth, y1: innerHeight }, // the say bar
   ];
   const inChrome = (x, y) => blocked.some((b) => x > b.x0 && x < b.x1 && y > b.y0 && y < b.y1);
-  host.replaceChildren(...wanted.map((l) => {
+  // Rank, cap and reuse. Five hundred individually created DOM nodes per frame
+  // is a compositor bill nobody agreed to pay.
+  const rank = { sel: 0, obs: 1, poi: 2, street: 3 };
+  wanted.sort((a, b) => (rank[a.cls] ?? 9) - (rank[b.cls] ?? 9));
+  const limit = MOBILE ? 26 : 70;
+
+  let used = 0;
+  for (const l of wanted) {
+    if (used >= limit) break;
     const p = project(l.at);
-    if (!p || p[0] < -100 || p[0] > innerWidth + 100 || p[1] < 0 || p[1] > innerHeight) return document.createTextNode('');
-    if (inChrome(p[0], p[1])) return document.createTextNode('');
+    if (!p || p[0] < -100 || p[0] > innerWidth + 100 || p[1] < 0 || p[1] > innerHeight) continue;
+    if (inChrome(p[0], p[1])) continue;
     let y = p[1];
     for (let guard = 0; guard < 12; guard++) {
       const clash = placed.find((q) => Math.abs(q[0] - p[0]) < 150 && Math.abs(q[1] - y) < 22);
@@ -237,13 +267,18 @@ function drawLabels() {
       y -= 24;
     }
     placed.push([p[0], y]);
-    const d = document.createElement('div');
-    d.className = `label ${l.cls}`;
-    d.style.left = `${p[0]}px`;
-    d.style.top = `${y}px`;
-    d.textContent = l.text;
-    return d;
-  }));
+
+    let d = host.children[used];
+    if (!d) { d = document.createElement('div'); host.append(d); }
+    const cls = `label ${l.cls}`;
+    if (d.className !== cls) d.className = cls;
+    if (d.textContent !== l.text) d.textContent = l.text;
+    d.style.transform = `translate(-50%,-100%) translate(${p[0]}px,${y}px)`;
+    d.hidden = false;
+    used++;
+  }
+  for (let i = used; i < host.children.length; i++) host.children[i].hidden = true;
+  stats.labels = used;
 }
 
 function labelFor(e) {
@@ -262,6 +297,7 @@ let pointers = new Map();
 let gesture = null;
 
 canvas.addEventListener('pointerdown', (ev) => {
+  lastInputAt = Date.now();
   canvas.setPointerCapture(ev.pointerId);
   pointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY, x0: ev.clientX, y0: ev.clientY, t: Date.now() });
   if (pointers.size === 1) {
@@ -298,6 +334,7 @@ canvas.addEventListener('contextmenu', (ev) => ev.preventDefault());
 canvas.addEventListener('pointermove', (ev) => {
   const pt = pointers.get(ev.pointerId);
   if (!pt) return;
+  lastInputAt = Date.now();
   const dx = ev.clientX - pt.x, dy = ev.clientY - pt.y;
   pt.x = ev.clientX; pt.y = ev.clientY;
 
@@ -378,6 +415,7 @@ canvas.addEventListener('pointerup', (ev) => {
 
 canvas.addEventListener('wheel', (ev) => {
   ev.preventDefault();
+  lastInputAt = Date.now();
   const before = rayToGround(S.world, rayAt(ev.clientX, ev.clientY));
   S.cam.dist = Math.max(12, Math.min(4000, S.cam.dist * (1 + Math.sign(ev.deltaY) * 0.11)));
   // Zoom toward what is under the cursor, not toward the middle of the screen.
@@ -401,11 +439,13 @@ function clampCamera() {
   S.cam.target[1] = Math.max(b[1] - margin, Math.min(b[3] + margin, S.cam.target[1]));
   S.cam.target[2] = S.world.place.groundAt(S.cam.target[0], S.cam.target[1]);
   S.cam.pitch = Math.max(0.14, Math.min(1.45, S.cam.pitch));
+  planDirty = true;
   // never end up underground
   const e = eye();
   const floor = S.world.place.groundAt(e[0], e[1]) + 3;
   if (e[2] < floor) S.cam.pitch = Math.min(1.45, S.cam.pitch + (floor - e[2]) / Math.max(20, S.cam.dist));
   S.dirty = true;
+  lastInputAt = Date.now();
 }
 
 /** Frame the whole place — the way back when you are lost. */
@@ -582,6 +622,7 @@ async function runAssistant(request) {
       camera: { target: S.cam.target, dist: S.cam.dist },
       selection: [...S.selection],
       pointer: S.pointer,
+      image: captureView(),
     });
   } catch (err) {
     toast(`The assistant could not answer: ${String(err.message).slice(0, 90)}`);
@@ -639,6 +680,18 @@ async function runAssistant(request) {
   toast(`${reasoning ? reasoning + ' — ' : ''}${done.join('; ')}`);
 }
 
+/** A small JPEG of what the person is actually looking at. */
+function captureView(maxWidth = 1100, quality = 0.72) {
+  try {
+    const c = document.createElement('canvas');
+    const scale = Math.min(1, maxWidth / canvas.width);
+    c.width = Math.round(canvas.width * scale);
+    c.height = Math.round(canvas.height * scale);
+    c.getContext('2d').drawImage(canvas, 0, 0, c.width, c.height);
+    return c.toDataURL('image/jpeg', quality);
+  } catch { return null; }
+}
+
 /** Where the key lives, and what that means. Said plainly rather than buried. */
 function openAIPanel() {
   document.querySelector('.aiPanel')?.remove();
@@ -646,60 +699,125 @@ function openAIPanel() {
   const panel = document.createElement('div');
   panel.className = 'menu aiPanel';
   panel.style.right = '12px';
-  panel.style.bottom = `calc(74px + var(--safe))`;
-  panel.style.width = 'min(400px, calc(100vw - 24px))';
+  panel.style.bottom = 'calc(74px + var(--safe))';
+  panel.style.width = 'min(420px, calc(100vw - 24px))';
 
-  const label = document.createElement('div');
-  label.className = 'menuLabel';
-  label.textContent = 'Let an assistant work the interface';
+  const head = document.createElement('div');
+  head.className = 'menuLabel';
+  head.textContent = 'Intelligence';
 
   const note = document.createElement('div');
   note.className = 'importStatus';
-  note.textContent = 'The key is kept in this browser only and is sent straight to the provider. Anyone with this device can read it — do not put a shared key into a public deployment; proxy it instead.';
+  note.textContent = 'The key stays in this browser and goes straight to the provider. Anyone using this device can read it — for anything shared, put it behind your own server instead.';
+
+  const field = (labelText, el) => {
+    const w = document.createElement('label');
+    w.className = 'aiField';
+    const sp = document.createElement('span');
+    sp.textContent = labelText;
+    w.append(sp, el);
+    return w;
+  };
 
   const key = document.createElement('input');
-  key.className = 'nameInput'; key.type = 'password'; key.placeholder = 'sk-…';
-  key.value = cfg.key || ''; key.setAttribute('aria-label', 'API key');
-
-  const model = document.createElement('input');
-  model.className = 'nameInput'; model.placeholder = 'model id, e.g. gpt-4o-mini';
-  model.value = cfg.model || 'gpt-4o-mini'; model.setAttribute('aria-label', 'Model');
+  key.className = 'nameInput'; key.type = 'password'; key.placeholder = 'sk-…'; key.value = cfg.key || '';
+  key.setAttribute('aria-label', 'API key');
 
   const base = document.createElement('input');
-  base.className = 'nameInput'; base.placeholder = 'https://api.openai.com/v1';
-  base.value = cfg.baseURL || 'https://api.openai.com/v1'; base.setAttribute('aria-label', 'Base URL');
+  base.className = 'nameInput'; base.value = cfg.baseURL || 'https://api.openai.com/v1';
+  base.setAttribute('aria-label', 'Base URL');
+
+  // The model list is whatever this key can actually reach. CREO does not ship
+  // a list of model names it hopes are still current.
+  const model = document.createElement('select');
+  model.className = 'aiSelect';
+  model.setAttribute('aria-label', 'Model');
+  const setModels = (ids) => {
+    model.replaceChildren();
+    for (const id of ids) {
+      const o = document.createElement('option');
+      o.value = id; o.textContent = id;
+      if (id === cfg.model) o.selected = true;
+      model.append(o);
+    }
+    if (!cfg.model && ids.length) model.value = ids[0];
+  };
+  setModels(cfg.model ? [cfg.model] : ['— press Refresh to list your models —']);
+
+  const refresh = document.createElement('button');
+  refresh.className = 'tool'; refresh.textContent = 'Refresh';
+
+  const effort = document.createElement('select');
+  effort.className = 'aiSelect';
+  effort.setAttribute('aria-label', 'Reasoning effort');
+  for (const e of EFFORTS) {
+    const o = document.createElement('option');
+    o.value = e; o.textContent = e;
+    if (e === (cfg.effort || 'medium')) o.selected = true;
+    effort.append(o);
+  }
+
+  const vision = document.createElement('select');
+  vision.className = 'aiSelect';
+  vision.setAttribute('aria-label', 'Let it see the view');
+  for (const [v, l] of [['auto', 'When it needs to'], ['always', 'Always'], ['never', 'Never']]) {
+    const o = document.createElement('option');
+    o.value = v; o.textContent = l;
+    if (v === (cfg.vision || 'auto')) o.selected = true;
+    vision.append(o);
+  }
+
+  const profiles = document.createElement('div');
+  profiles.className = 'row';
+  profiles.style.padding = '0 6px 4px';
+  for (const p of PROFILES) {
+    const b = document.createElement('button');
+    b.className = 'tool';
+    b.title = p.note;
+    b.textContent = p.label;
+    b.onclick = () => { effort.value = p.effort; vision.value = p.vision; save(); };
+    profiles.append(b);
+  }
 
   const status = document.createElement('div');
   status.className = 'importStatus';
 
-  const row = document.createElement('div');
-  row.className = 'row';
-  row.style.padding = '0 6px 6px';
-
-  const save = document.createElement('button');
-  save.className = 'tool'; save.textContent = 'Save';
-  save.onclick = () => {
+  const save = () => {
+    const provider = /anthropic/.test(base.value) || /^claude/.test(model.value) ? 'anthropic' : 'openai';
     setConfig({
-      key: key.value.trim(), model: model.value.trim(), baseURL: base.value.trim(),
-      provider: /anthropic/.test(base.value) || /^claude/.test(model.value) ? 'anthropic' : 'openai',
+      key: key.value.trim(), baseURL: base.value.trim(),
+      model: model.value.startsWith('—') ? '' : model.value,
+      effort: effort.value, vision: vision.value, provider, api: 'auto',
     });
-    status.textContent = 'Saved in this browser.';
     $('aiBtn').classList.toggle('on', hasKey());
+    status.textContent = `Using ${model.value} · ${effort.value} · sees the view ${vision.value}.`;
   };
+  for (const el of [model, effort, vision]) el.onchange = save;
+  key.onchange = save; base.onchange = save;
 
-  const which = document.createElement('button');
-  which.className = 'tool'; which.textContent = 'Which models?';
-  which.onclick = async () => {
-    setConfig({ key: key.value.trim(), baseURL: base.value.trim(), model: model.value.trim() });
-    status.textContent = 'asking the endpoint…';
+  refresh.onclick = async () => {
+    setConfig({ key: key.value.trim(), baseURL: base.value.trim() });
+    status.textContent = 'asking your endpoint what it serves…';
     try {
       const ids = await listModels();
-      status.textContent = `${ids.length} available — e.g. ${ids.slice(0, 6).join(', ')}`;
-    } catch (err) { status.textContent = String(err.message).slice(0, 140); }
+      setModels(ids);
+      save();
+      status.textContent = `${ids.length} models available to this key.`;
+    } catch (err) {
+      status.textContent = String(err.message).slice(0, 160);
+    }
   };
 
-  row.append(save, which);
-  panel.append(label, note, key, model, base, row, status);
+  const usage = document.createElement('div');
+  usage.className = 'importStatus';
+  const calls = lastCalls(5);
+  usage.textContent = calls.length
+    ? `Recent: ${calls.map((c) => `${c.model} ${c.effort} ${c.ms}ms${c.inTokens ? ` ${c.inTokens}→${c.outTokens}` : ''}${c.vision ? ' +view' : ''}`).join(' · ')}`
+    : 'No calls yet. Each one records model, effort, latency, tokens and whether it saw the view.';
+
+  panel.append(head, note, field('Key', key), field('Endpoint', base),
+    field('Model', model), refresh, field('Reasoning', effort), field('Sees the view', vision),
+    profiles, status, usage);
   document.body.append(panel);
   key.focus();
   setTimeout(() => document.addEventListener('pointerdown', function off(e) {
@@ -1309,6 +1427,7 @@ async function loadPlace(key) {
 // keyboard: every gesture has a key, because not everyone has a steady hand
 addEventListener('keydown', (ev) => {
   if (ev.target.tagName === 'INPUT') return;
+  lastInputAt = Date.now();
   const k = ev.key.toLowerCase();
   if (k === 'z' && (ev.metaKey || ev.ctrlKey)) { ev.preventDefault(); ev.shiftKey ? $('redoBtn').click() : $('undoBtn').click(); }
   else if (k === 'd') setMode(S.mode === 'draw' ? 'select' : 'draw');
@@ -1381,7 +1500,7 @@ loadPlace(localStorage.getItem('creo.place') || 'settlement');
 if (shouldShowHelp()) setTimeout(() => openHelp(), 600);
 else if (!S.author) setTimeout(() => toast('Tap “add your name” at the top so the place can remember who changed what.'), 900);
 requestAnimationFrame(frame);
-addEventListener('resize', () => { S.dirty = true; });
+addEventListener('resize', () => { invalidate({ plan: true }); });
 
 // expose for the browser-side test harness (§29: the builder does not grade itself)
 window.CREO = {

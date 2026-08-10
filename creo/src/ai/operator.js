@@ -18,19 +18,62 @@ import * as G from '../core/geom.js';
 const KEY_STORE = 'creo.ai.key';
 const CFG_STORE = 'creo.ai.config';
 
+// Defaults CREO used to ship. If one of these is still sitting in a browser it
+// is a leftover, not a choice, and it is why an old model looked like the only
+// option — clear it so the endpoint gets asked instead.
+const STALE_DEFAULTS = new Set(['gpt-4o-mini', 'gpt-4o', 'gpt-4', 'gpt-3.5-turbo']);
+
 export function getConfig() {
-  try { return { key: localStorage.getItem(KEY_STORE) || '', ...JSON.parse(localStorage.getItem(CFG_STORE) || '{}') }; }
-  catch { return { key: '' }; }
+  try {
+    const cfg = { key: localStorage.getItem(KEY_STORE) || '', ...JSON.parse(localStorage.getItem(CFG_STORE) || '{}') };
+    if (cfg.model && STALE_DEFAULTS.has(cfg.model) && !cfg.modelChosen) cfg.model = '';
+    return cfg;
+  } catch { return { key: '' }; }
 }
-export function setConfig({ key, baseURL, model, provider }) {
-  if (key !== undefined) localStorage.setItem(KEY_STORE, key);
+export function setConfig(patch = {}) {
+  if (patch.key !== undefined) localStorage.setItem(KEY_STORE, patch.key);
   const cfg = getConfig();
-  localStorage.setItem(CFG_STORE, JSON.stringify({
-    baseURL: baseURL ?? cfg.baseURL ?? 'https://api.openai.com/v1',
-    model: model ?? cfg.model ?? 'gpt-4o-mini',
-    provider: provider ?? cfg.provider ?? 'openai',
-  }));
+  const next = {
+    baseURL: patch.baseURL ?? cfg.baseURL ?? 'https://api.openai.com/v1',
+    // No hardcoded default model. Whatever the endpoint reports is the truth;
+    // shipping a stale id was why an old model was the only thing on offer.
+    model: patch.model ?? cfg.model ?? '',
+    // once a model is picked from the endpoint's own list it is a real choice
+    modelChosen: patch.model ? true : (cfg.modelChosen ?? false),
+    provider: patch.provider ?? cfg.provider ?? 'openai',
+    effort: patch.effort ?? cfg.effort ?? 'medium',
+    vision: patch.vision ?? cfg.vision ?? 'auto',
+    api: patch.api ?? cfg.api ?? 'auto',
+  };
+  localStorage.setItem(CFG_STORE, JSON.stringify(next));
+  return next;
 }
+
+/**
+ * Profiles are (model × reasoning effort × how much it sees). The model is
+ * whichever id you chose from your own endpoint — CREO does not decide which
+ * models exist, it asks.
+ */
+export const EFFORTS = ['none', 'low', 'medium', 'high', 'xhigh', 'max'];
+export const PROFILES = [
+  { key: 'fast', label: 'Fast', effort: 'low', vision: 'never', note: 'interface commands, no screenshot' },
+  { key: 'normal', label: 'Normal', effort: 'medium', vision: 'auto', note: 'the everyday world agent' },
+  { key: 'deep', label: 'Deep', effort: 'high', vision: 'auto', note: 'diagnosis and why-questions' },
+  { key: 'max', label: 'Exhaustive', effort: 'max', vision: 'always', note: 'slow, for hard spatial problems' },
+];
+
+/** Route by what was asked, rather than paying for maximum reasoning always. */
+export function effortFor(text, fallback = 'medium') {
+  const t = String(text).toLowerCase();
+  if (/^(select|show|hide|zoom|go to|take me|look)/.test(t)) return 'low';
+  if (/(why|what happens|compare|best|solve|flood|instead|without)/.test(t)) return 'high';
+  if (/(build|move|plant|drain|connect|remove|put|add)/.test(t)) return 'medium';
+  return fallback;
+}
+
+/** Every call records what it cost, so profiles can be compared rather than felt. */
+export const telemetry = [];
+export function lastCalls(n = 12) { return telemetry.slice(-n); }
 export const hasKey = () => !!getConfig().key;
 
 /** Ask the endpoint what it serves, so a model id is never a guess. */
@@ -51,34 +94,89 @@ export async function listModels() {
   return (await r.json()).data.map((m) => m.id).sort();
 }
 
-async function complete({ system, prompt }) {
-  const { key, baseURL, model, provider } = getConfig();
+async function complete({ system, prompt, image = null, effort = null }) {
+  const cfg = getConfig();
+  const { key, baseURL, model, provider } = cfg;
   if (!key) throw new Error('no API key configured');
+  if (!model) throw new Error('no model chosen — open the panel and pick one from your endpoint');
+  const started = performance.now();
+  const record = (api, usage) => {
+    telemetry.push({
+      at: Date.now(), model, api, effort: effort || cfg.effort,
+      ms: Math.round(performance.now() - started),
+      inTokens: usage?.input_tokens ?? usage?.prompt_tokens ?? null,
+      outTokens: usage?.output_tokens ?? usage?.completion_tokens ?? null,
+      vision: !!image,
+    });
+  };
+
   if (provider === 'anthropic') {
+    const content = [{ type: 'text', text: prompt }];
+    if (image) content.unshift({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: image.split(',')[1] } });
     const r = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json', 'x-api-key': key,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true',
-      },
-      body: JSON.stringify({ model: model || 'claude-sonnet-5', max_tokens: 1200, temperature: 0, system, messages: [{ role: 'user', content: prompt }] }),
+      headers: { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+      body: JSON.stringify({ model, max_tokens: 2000, temperature: 0, system, messages: [{ role: 'user', content }] }),
     });
     if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 200)}`);
     const j = await r.json();
+    record('messages', j.usage);
     return j.content.filter((c) => c.type === 'text').map((c) => c.text).join('');
   }
-  const r = await fetch(`${(baseURL || 'https://api.openai.com/v1').replace(/\/$/, '')}/chat/completions`, {
+
+  const base = (baseURL || 'https://api.openai.com/v1').replace(/\/$/, '');
+  const content = [{ type: 'input_text', text: prompt }];
+  if (image) content.push({ type: 'input_image', image_url: image, detail: 'low' });
+
+  // The reasoning/responses surface where it exists, chat completions where it
+  // does not. Which one worked is remembered so the fallback is paid for once.
+  if (cfg.api !== 'chat') {
+    try {
+      const r = await fetch(`${base}/responses`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
+        body: JSON.stringify({
+          model,
+          instructions: system,
+          input: [{ role: 'user', content }],
+          ...(effort || cfg.effort ? { reasoning: { effort: effort || cfg.effort } } : {}),
+          text: { verbosity: 'low' },
+        }),
+      });
+      if (r.ok) {
+        const j = await r.json();
+        record('responses', j.usage);
+        if (cfg.api !== 'responses') setConfig({ api: 'responses' });
+        const text = j.output_text
+          ?? (j.output || []).flatMap((o) => (o.content || []).filter((c) => c.type === 'output_text').map((c) => c.text)).join('');
+        if (text) return text;
+      } else if (r.status !== 404 && r.status !== 400) {
+        throw new Error(`${r.status}: ${(await r.text()).slice(0, 200)}`);
+      } else {
+        setConfig({ api: 'chat' });
+      }
+    } catch (err) {
+      if (!/fetch|404|400/i.test(String(err.message))) throw err;
+      setConfig({ api: 'chat' });
+    }
+  }
+
+  const msgContent = image
+    ? [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: image, detail: 'low' } }]
+    : prompt;
+  const r2 = await fetch(`${base}/chat/completions`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
     body: JSON.stringify({
-      model: model || 'gpt-4o-mini', temperature: 0,
+      model, temperature: 0,
       response_format: { type: 'json_object' },
-      messages: [{ role: 'system', content: system }, { role: 'user', content: prompt }],
+      messages: [{ role: 'system', content: system }, { role: 'user', content: msgContent }],
     }),
   });
-  if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 200)}`);
-  return (await r.json()).choices[0].message.content;
+  if (!r2.ok) throw new Error(`${r2.status}: ${(await r2.text()).slice(0, 200)}`);
+  const j2 = await r2.json();
+  record('chat', j2.usage);
+  return j2.choices[0].message.content;
 }
 
 // ----------------------------------------------------------------- digest ---
@@ -208,14 +306,22 @@ export function validate(world, ops, digestObj) {
  * @returns {{reasoning, operations, refused, digest, raw}}
  */
 export async function proposeOperations(world, request, view) {
+  const cfg = getConfig();
   const d = digest(world, view);
+  const wantsVision = cfg.vision === 'always'
+    || (cfg.vision === 'auto' && (view.selection?.length || view.pointer
+        || /\b(this|that|here|there|looks|see|behind|beside|left|right)\b/i.test(request)));
   const prompt = [
     `Request: ${request}`,
     '',
     'What is in view:',
     JSON.stringify(d, null, 1),
   ].join('\n');
-  const raw = await complete({ system: SYSTEM, prompt });
+  const raw = await complete({
+    system: SYSTEM, prompt,
+    image: wantsVision ? view.image || null : null,
+    effort: effortFor(request, cfg.effort),
+  });
   let parsed;
   try {
     parsed = JSON.parse(String(raw).replace(/^```(?:json)?\s*|\s*```$/g, '').trim());

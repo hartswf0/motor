@@ -21,8 +21,8 @@ void main() {
   vec4 clip = uViewProj * vec4(aPos, 1.0);
   gl_Position = clip;
   float lambert = max(dot(normalize(aNormal), normalize(uSun)), 0.0);
-  float ambient = 0.52 + 0.13 * aNormal.z;
-  vColor = vec4(aColor.rgb * (ambient + 0.55 * lambert), aColor.a);
+  float ambient = 0.66 + 0.14 * aNormal.z;
+  vColor = vec4(aColor.rgb * (ambient + 0.46 * lambert), aColor.a);
   vFog = clamp(clip.w / 900.0, 0.0, 1.0);
   vWorld = aPos;
 }`;
@@ -109,10 +109,11 @@ export class Renderer {
     gl.enable(gl.CULL_FACE);
     gl.cullFace(gl.BACK);
     this.fidelity = 'high';
+    this.dprCap = 2;
   }
 
   resize() {
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const dpr = Math.min(window.devicePixelRatio || 1, this.dprCap ?? 2);
     const w = Math.floor(this.canvas.clientWidth * dpr);
     const h = Math.floor(this.canvas.clientHeight * dpr);
     if (this.canvas.width !== w || this.canvas.height !== h) {
@@ -396,8 +397,19 @@ function vary(base, seed, amount = 0.09) {
   ];
 }
 
+const WATER_COLOURS = {
+  ocean: [0.11, 0.30, 0.50], bay: [0.12, 0.32, 0.52], lake: [0.14, 0.36, 0.56],
+  reservoir: [0.13, 0.34, 0.54], pond: [0.17, 0.40, 0.58], river: [0.16, 0.40, 0.60],
+  canal: [0.18, 0.42, 0.58], stream: [0.22, 0.48, 0.64], channel: [0.20, 0.45, 0.62],
+  drain: [0.25, 0.36, 0.44], ditch: [0.26, 0.38, 0.44], wetland: [0.28, 0.44, 0.44],
+  coastline: [0.14, 0.36, 0.56],
+};
+
 function colorFor(e) {
   if (e.epistemic === 'DISPUTED') return PALETTE.disputed;
+  if (e.type === 'water' || e.type === 'stream') {
+    return WATER_COLOURS[e.subtype] || PALETTE.water;
+  }
   if (e.type === 'structure') {
     const stated = parseColour(e.props?.colour);
     if (stated) return stated;
@@ -433,10 +445,16 @@ function roofHeightFor(e, ring) {
 }
 
 function terrainColor(h, t, water, x, y) {
-  let lo = Infinity, hi = -Infinity;
-  lo = t.__lo ?? (t.__lo = Math.min(...t.data));
-  hi = t.__hi ?? (t.__hi = Math.max(...t.data));
-  const f = hi > lo ? (h - lo) / (hi - lo) : 0.5;
+  // Normalise on the 5th-95th percentile, not min-max: one hillside 200 m above
+  // the town used to push the entire town to the dark end of the ramp, and the
+  // place read as black.
+  if (t.__lo === undefined) {
+    const sorted = Float32Array.from(t.data).sort();
+    t.__lo = sorted[Math.floor(sorted.length * 0.05)];
+    t.__hi = sorted[Math.floor(sorted.length * 0.95)];
+    if (t.__hi - t.__lo < 1) { t.__lo -= 0.5; t.__hi += 0.5; }
+  }
+  const f = Math.max(0, Math.min(1, (h - t.__lo) / (t.__hi - t.__lo)));
   return [
     PALETTE.ground[0] + (PALETTE.groundHigh[0] - PALETTE.ground[0]) * f,
     PALETTE.ground[1] + (PALETTE.groundHigh[1] - PALETTE.ground[1]) * f,

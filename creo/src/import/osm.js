@@ -39,7 +39,10 @@ export function overpassQuery(bbox) {
   relation["building"](${b});
   way["highway"](${b});
   way["waterway"](${b});
-  way["natural"~"water|wood|scrub|wetland"](${b});
+  relation["waterway"](${b});
+  way["natural"~"water|wood|scrub|wetland|bay|strait|beach|coastline"](${b});
+  relation["natural"~"water|wetland|bay"](${b});
+  way["landuse"~"reservoir|basin"](${b});
   way["landuse"](${b});
   way["barrier"~"wall|fence|retaining_wall"](${b});
   way["railway"](${b});
@@ -102,6 +105,27 @@ const ROAD_WIDTH = {
 };
 const PATH_KINDS = new Set(['footway', 'path', 'pedestrian', 'steps', 'cycleway', 'track']);
 
+/**
+ * Permanent water is part of the world. It is not the flood model, which is a
+ * temporary condition drawn on top. Everything here is IMPORTED hydrography and
+ * is visible whether or not anyone has asked about rain.
+ */
+const WATERWAY_KIND = {
+  river: 'river', stream: 'stream', canal: 'canal', drain: 'drain',
+  ditch: 'ditch', brook: 'stream', tidal_channel: 'channel',
+};
+function waterKind(tags) {
+  if (tags.natural === 'coastline') return 'coastline';
+  if (tags.natural === 'bay' || tags.natural === 'strait') return 'bay';
+  if (tags.landuse === 'reservoir' || tags.landuse === 'basin') return 'reservoir';
+  if (tags.natural === 'wetland') return 'wetland';
+  if (tags.natural === 'water') return tags.water || 'lake';
+  if (tags.waterway) return WATERWAY_KIND[tags.waterway] || 'stream';
+  return null;
+}
+/** Constructed drainage participates in the causal graph; a lake does not. */
+const IS_DRAINAGE = new Set(['drain', 'ditch', 'canal']);
+
 /** Storeys → metres, using OSM's own tags before guessing. */
 function buildingHeight(tags) {
   const h = parseFloat(tags['height'] || tags['building:height']);
@@ -128,7 +152,10 @@ export function osmToPlace(osm, { key, name, bbox, terrain = null, fetchedAt = n
     datum: terrain ? terrain.datum : null,
   };
   const P = place.projection;
-  const toLocal = (n) => P.toLocal(n.lat, n.lon);
+  // Centimetres. OSM knows these positions to about a metre; carrying fifteen
+  // significant figures of them turned a dense quarter into a 23 MB file.
+  const cm = (v) => Math.round(v * 100) / 100;
+  const toLocal = (n) => { const [x, y] = P.toLocal(n.lat, n.lon); return [cm(x), cm(y)]; };
 
   // Terrain first: everything else sits on it.
   const bounds = localBounds(P, bbox);
@@ -140,6 +167,19 @@ export function osmToPlace(osm, { key, name, bbox, terrain = null, fetchedAt = n
 
   const world = new World(place);
   const stats = { buildings: 0, roads: 0, paths: 0, water: 0, surfaces: 0, trees: 0, walls: 0, skipped: 0 };
+  const coastlines = [];
+
+  // The citation is the OSM reference, not a copy of every tag: way/25400176 can
+  // always be looked up. Storing the full tag dictionary twice — once in
+  // evidence, once in props — made a dense quarter a 24 MB file.
+  const KEEP_TAGS = ['name', 'building', 'building:levels', 'height', 'roof:shape', 'roof:height',
+    'building:colour', 'building:material', 'highway', 'waterway', 'natural', 'water', 'landuse',
+    'surface', 'width', 'lanes', 'amenity', 'shop', 'barrier', 'railway', 'addr:street', 'addr:housenumber'];
+  const slimTags = (tags = {}) => {
+    const out = {};
+    for (const k of KEEP_TAGS) if (tags[k] !== undefined) out[k] = tags[k];
+    return out;
+  };
 
   const add = (spec, el) => {
     // Pull the id out first: spreading a spec whose id is undefined used to
@@ -150,8 +190,8 @@ export function osmToPlace(osm, { key, name, bbox, terrain = null, fetchedAt = n
       source: 'OpenStreetMap',
       epistemic: 'IMPORTED',
       author: 'OpenStreetMap contributors',
-      evidence: [{ kind: 'osm', ref: `${el.type}/${el.id}`, tags: el.tags || {}, fetchedAt }],
-      props: { osm: { type: el.type, id: el.id, tags: el.tags || {} } },
+      evidence: [{ kind: 'osm', ref: `${el.type}/${el.id}`, fetchedAt }],
+      props: { osm: { type: el.type, id: el.id, tags: slimTags(el.tags) } },
       ...rest,
     });
     place.put(e, 'AS_IS');
@@ -175,7 +215,7 @@ export function osmToPlace(osm, { key, name, bbox, terrain = null, fetchedAt = n
           name: tags.name || String(poiKind).replace(/_/g, ' '),
           footprint: G.circleRing(x, y, 1.1, 8), zBase: z, zTop: z + 2.2,
           collision: 'none', use: String(poiKind).replace(/_/g, ' '),
-          props: { poi: true, osm: { type: el.type, id: el.id, tags } },
+          props: { poi: true, osm: { type: el.type, id: el.id, tags: slimTags(tags) } },
         }, el);
         stats.markers = (stats.markers || 0) + 1;
         continue;
@@ -189,6 +229,39 @@ export function osmToPlace(osm, { key, name, bbox, terrain = null, fetchedAt = n
           collision: 'soft', sim: { canopy: 21, permeability: 0.7 }, props: { canopyRadius: 2.6 },
         }, el);
         stats.trees++;
+      }
+      continue;
+    }
+
+    // A lake of any size is usually a multipolygon relation, not a way. Taking
+    // only ways is why large water was missing entirely.
+    if (el.type === 'relation') {
+      const outers = (el.members || []).filter((m) => m.role !== 'inner' && m.geometry && m.geometry.length > 2);
+      if (!outers.length) { stats.skipped++; continue; }
+      const kind = waterKind(tags);
+      for (const [mi, m] of outers.entries()) {
+        const ringM = dedupeRing(m.geometry.map(toLocal));
+        if (ringM.length < 3) continue;
+        const trimmedM = clipRing(ringM, window_);
+        if (!trimmedM || G.area(trimmedM) < 6) continue;
+        const cM = G.centroid(trimmedM);
+        const zM = place.groundAt(cM[0], cM[1]);
+        if (kind) {
+          add({
+            id: `osm_r${el.id}_${mi}`, type: 'water', subtype: kind,
+            name: tags.name || null, footprint: trimmedM,
+            zBase: zM - depthFor(kind), zTop: zM, collision: 'none',
+            network: IS_DRAINAGE.has(kind) ? 'drainage' : null,
+            sim: { capacity: 999, permeability: 0.02 },
+          }, el);
+          stats.water++;
+        } else if (tags.building) {
+          add({ id: `osm_r${el.id}_${mi}`, type: 'structure', name: tags.name || 'Building',
+                footprint: trimmedM, zBase: zM, zTop: zM + buildingHeight(tags).height,
+                collision: 'solid', sim: { permeability: 0, roughness: 0.02 },
+                props: { heightBasis: buildingHeight(tags).basis, osm: { type: el.type, id: el.id, tags: slimTags(tags) } } }, el);
+          stats.buildings++;
+        }
       }
       continue;
     }
@@ -229,7 +302,7 @@ export function osmToPlace(osm, { key, name, bbox, terrain = null, fetchedAt = n
           heightBasis: basis, roof, address,
           colour: tags['building:colour'] || null,
           levels: parseFloat(tags['building:levels']) || null,
-          osm: { type: el.type, id: el.id, tags },
+          osm: { type: el.type, id: el.id, tags: slimTags(tags) },
         },
       }, el);
       stats.buildings++;
@@ -268,10 +341,16 @@ export function osmToPlace(osm, { key, name, bbox, terrain = null, fetchedAt = n
         use: tags.highway.replace(/_/g, ' '),
         collision: 'none',
         sim: { permeability: tags.surface === 'unpaved' || tags.surface === 'ground' ? 0.4 : 0.15, roughness: 0.02 },
-        props: { surface: tags.surface || null, osm: { type: el.type, id: el.id, tags } },
+        props: { surface: tags.surface || null, osm: { type: el.type, id: el.id, tags: slimTags(tags) } },
       }, el);
       isPath ? stats.paths++ : stats.roads++;
       }
+      continue;
+    }
+
+    if (tags.natural === 'coastline') {
+      coastlines.push(fullLine);
+      stats.water++;
       continue;
     }
 
@@ -281,10 +360,12 @@ export function osmToPlace(osm, { key, name, bbox, terrain = null, fetchedAt = n
       if (!pieces.length) { stats.skipped++; continue; }
       const line2 = pieces[0];
       const z = place.groundAt(line2[0][0], line2[0][1]);
+      const kind = waterKind(tags) || 'stream';
       add({
-        type: tags.waterway === 'ditch' || tags.waterway === 'drain' ? 'drain' : 'stream',
+        type: IS_DRAINAGE.has(kind) && kind !== 'canal' ? 'drain' : 'water',
+        subtype: kind,
         name: tags.name || null, use: tags.waterway, path: line2, width,
-        zBase: z - (tags.waterway === 'river' ? 2 : 0.8), zTop: z,
+        zBase: z - depthFor(kind), zTop: z,
         network: 'drainage', collision: 'none',
         sim: { capacity: width * 0.8, permeability: 0.1 },
       }, el);
@@ -297,8 +378,14 @@ export function osmToPlace(osm, { key, name, bbox, terrain = null, fetchedAt = n
       if (!trimmed || G.area(trimmed) < 4) { stats.skipped++; continue; }
       const c = G.centroid(trimmed);
       const z = place.groundAt(c[0], c[1]);
-      if (tags.natural === 'water') {
-        add({ type: 'water', name: tags.name || 'Water', footprint: trimmed, zBase: z - 1, zTop: z, collision: 'none', sim: { capacity: 999 } }, el);
+      const areaKind = waterKind(tags);
+      if (areaKind) {
+        add({
+          type: 'water', subtype: areaKind, name: tags.name || null,
+          footprint: trimmed, zBase: z - depthFor(areaKind), zTop: z,
+          collision: 'none', network: IS_DRAINAGE.has(areaKind) ? 'drainage' : null,
+          sim: { capacity: 999, permeability: 0.02 },
+        }, el);
         stats.water++;
       } else if (tags.barrier) {
         add({ type: 'wall', name: tags.barrier, footprint: trimmed, zBase: z, zTop: z + 2, collision: 'solid' }, el);
@@ -326,6 +413,22 @@ export function osmToPlace(osm, { key, name, bbox, terrain = null, fetchedAt = n
     }
 
     stats.skipped++;
+  }
+
+  // The sea is not a blue line. OSM draws a coastline with land on its left, so
+  // everything to its right, out to the edge of the window, is ocean.
+  if (coastlines.length) {
+    const sea = seaFromCoastlines(coastlines, window_);
+    for (const [i, ring] of sea.entries()) {
+      const c = G.centroid(ring);
+      add({
+        id: `sea_${i}`, type: 'water', subtype: 'ocean', name: 'Sea',
+        footprint: ring, zBase: -4, zTop: 0, collision: 'none',
+        sim: { capacity: 9999, permeability: 0 },
+        props: { derivedFrom: 'natural=coastline' },
+      }, { type: 'way', id: `coast${i}`, tags: { natural: 'coastline' } });
+    }
+    if (sea.length) stats.ocean = sea.length;
   }
 
   // Landmarks a person can point at by name, taken from what OSM actually names.
@@ -420,6 +523,143 @@ function clipSegment(p0, p1, box) {
     [p0[0] + dx * t0, p0[1] + dy * t0],
     [p0[0] + dx * t1, p0[1] + dy * t1],
   ];
+}
+
+/** How deep the world's water sits below the ground beside it. */
+function depthFor(kind) {
+  return { ocean: 4, lake: 3, pond: 1.2, reservoir: 4, river: 2.5, canal: 2,
+           stream: 0.8, drain: 0.8, ditch: 0.6, wetland: 0.2, bay: 4, channel: 1.5 }[kind] ?? 1;
+}
+
+/**
+ * Close each coastline against the window on its seaward side.
+ *
+ * OSM's convention is that land lies to the LEFT of a coastline way's direction,
+ * so the sea is to the right. Rather than infer the side from winding — which is
+ * easy to get backwards — both closures are built and the one that actually
+ * contains a point sampled just off the coast to starboard is the sea.
+ */
+export function __test_sea(lines, box) { return seaFromCoastlines(lines, box); }
+
+function seaFromCoastlines(rawLines, box) {
+  // OSM splits a shore into many ways that meet end to end. Each one taken
+  // alone often begins or ends inside the window and can close against nothing,
+  // which is why no sea appeared at all. Join them first.
+  const lines = stitch(rawLines, 1.0);
+  const out = [];
+  for (const full of lines) {
+    for (const piece of clipToBox(full, box)) {
+      if (piece.length < 2) continue;
+      const a = piece[0], b = piece[piece.length - 1];
+      if (G.dist(a, b) < 1) continue;                      // an island, not a shore
+      // A chain that stops just inside the window is extended along its own
+      // heading until it meets the edge — the shore does not simply end there.
+      const ext = piece.slice();
+      if (!onBoundary(ext[0], box)) {
+        const p = toEdge(ext[0], G.norm(G.sub(ext[0], ext[1])), box);
+        if (!p) continue;
+        ext.unshift(p);
+      }
+      if (!onBoundary(ext[ext.length - 1], box)) {
+        const p = toEdge(ext[ext.length - 1], G.norm(G.sub(ext[ext.length - 1], ext[ext.length - 2])), box);
+        if (!p) continue;
+        ext.push(p);
+      }
+      piece.length = 0;
+      piece.push(...ext);
+
+      // a point just to starboard of the middle of the coast: that is water
+      const mid = Math.floor(piece.length / 2);
+      const p0 = piece[Math.max(0, mid - 1)], p1 = piece[Math.min(piece.length - 1, mid + 1)];
+      const dir = G.norm(G.sub(p1, p0));
+      if (!Number.isFinite(dir[0])) continue;
+      const starboard = [dir[1], -dir[0]];                 // right of travel
+      const probe = [piece[mid][0] + starboard[0] * 2, piece[mid][1] + starboard[1] * 2];
+
+      for (const way of [1, -1]) {
+        const ring = piece.concat(boundaryPath(b, a, box, way));
+        if (ring.length < 3) continue;
+        if (G.area(ring) < 50) continue;
+        if (G.pointInRing(probe, ring)) { out.push(G.ensureCCW(ring)); break; }
+      }
+    }
+  }
+  return out;
+}
+
+/** Join polylines that share an endpoint into the longest chains available. */
+function stitch(lines, tol) {
+  const pool = lines.map((l) => l.slice()).filter((l) => l.length >= 2);
+  const out = [];
+  const near = (a, b) => G.dist(a, b) <= tol;
+  while (pool.length) {
+    let cur = pool.pop();
+    let joined = true;
+    while (joined) {
+      joined = false;
+      for (let i = 0; i < pool.length; i++) {
+        const other = pool[i];
+        const [cs, ce] = [cur[0], cur[cur.length - 1]];
+        const [os, oe] = [other[0], other[other.length - 1]];
+        if (near(ce, os)) { cur = cur.concat(other.slice(1)); }
+        else if (near(ce, oe)) { cur = cur.concat(other.slice(0, -1).reverse()); }
+        else if (near(cs, oe)) { cur = other.slice(0, -1).concat(cur); }
+        else if (near(cs, os)) { cur = other.slice(1).reverse().concat(cur); }
+        else continue;
+        pool.splice(i, 1);
+        joined = true;
+        break;
+      }
+    }
+    out.push(cur);
+  }
+  return out;
+}
+
+const onBoundary = (p, box, tol = 0.5) =>
+  Math.abs(p[0] - box[0]) < tol || Math.abs(p[0] - box[2]) < tol
+  || Math.abs(p[1] - box[1]) < tol || Math.abs(p[1] - box[3]) < tol;
+
+/** March from a point along a heading until the window edge is met. */
+function toEdge(p, dir, box) {
+  if (!Number.isFinite(dir[0]) || (dir[0] === 0 && dir[1] === 0)) return null;
+  const ts = [];
+  if (dir[0] !== 0) { ts.push((box[0] - p[0]) / dir[0], (box[2] - p[0]) / dir[0]); }
+  if (dir[1] !== 0) { ts.push((box[1] - p[1]) / dir[1], (box[3] - p[1]) / dir[1]); }
+  const t = ts.filter((v) => v > 1e-6).sort((a, b) => a - b)[0];
+  if (!Number.isFinite(t)) return null;
+  return [p[0] + dir[0] * t, p[1] + dir[1] * t];
+}
+
+/** Position of a boundary point around the window perimeter, in [0,4). */
+function perimeterT(p, box) {
+  const [x0, y0, x1, y1] = box;
+  const w = x1 - x0 || 1, h = y1 - y0 || 1;
+  if (Math.abs(p[1] - y0) <= Math.abs(p[1] - y1) && Math.abs(p[1] - y0) < 1) return (p[0] - x0) / w;
+  if (Math.abs(p[0] - x1) < 1) return 1 + (p[1] - y0) / h;
+  if (Math.abs(p[1] - y1) < 1) return 2 + (x1 - p[0]) / w;
+  return 3 + (y1 - p[1]) / h;
+}
+
+/** The corners passed walking the window edge from one point to another. */
+function boundaryPath(from, to, box, direction) {
+  const [x0, y0, x1, y1] = box;
+  const corners = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];   // the corner at integer t = k is corners[k]
+  let t = perimeterT(from, box);
+  const target = perimeterT(to, box);
+  const path = [];
+  for (let n = 0; n < 5; n++) {
+    const next = direction > 0 ? Math.floor(t) + 1 : Math.ceil(t) - 1;
+    const reached = direction > 0
+      ? (target > t && target <= next) || (target < t && next >= 4 && target + 4 <= next)
+      : (target < t && target >= next) || (target > t && next <= 0 && target - 4 >= next);
+    if (reached) break;
+    // The corner reached is the one AT t = next, whichever way we are walking.
+    const idx = ((next % 4) + 4) % 4;
+    path.push(corners[idx]);
+    t = ((next % 4) + 4) % 4;
+  }
+  return path;
 }
 
 function dedupeRing(line) {
