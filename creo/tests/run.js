@@ -1119,6 +1119,39 @@ group('references', () => {
     });
   }
 
+  // Two fields called `mode` on the state object, one for the drawing tool and
+  // one for the assistant. The second won, so drawing set the assistant's
+  // commitment and the assistant reset the drawing tool. JavaScript reports
+  // nothing at all for this. It is the third collision of its kind in this
+  // build (S.plan was the second), so it gets a test rather than another fix.
+  test('no object literal declares the same key twice', () => {
+    const files = ['src/ui/app.js', 'src/ui/chrome.js', 'src/ui/importui.js',
+      'src/ai/operator.js', 'src/ai/modes.js', 'src/ai/investigate.js',
+      'src/core/world.js', 'src/world/ops.js'];
+    const bad = [];
+    for (const file of files) {
+      const src = readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
+      // walk brace depth, collecting `key:` at each level of each literal
+      const stack = [];
+      let depth = 0;
+      const lines = src.split('\n');
+      for (let ln = 0; ln < lines.length; ln++) {
+        const line = lines[ln].replace(/\/\/.*$/, '');
+        for (let i = 0; i < line.length; i++) {
+          if (line[i] === '{') { depth++; stack.push({ keys: new Map(), depth }); }
+          else if (line[i] === '}') { stack.pop(); depth--; }
+        }
+        const top = stack[stack.length - 1];
+        if (!top) continue;
+        const m = line.match(/^\s*([A-Za-z_$][\w$]*)\s*:/);
+        if (!m) continue;
+        if (top.keys.has(m[1])) bad.push(`${file}:${ln + 1} ${m[1]} (also line ${top.keys.get(m[1])})`);
+        else top.keys.set(m[1], ln + 1);
+      }
+    }
+    eq(bad.join('; '), '', 'a later key silently overwrites an earlier one');
+  });
+
   // and the ranking the interface promises
   test('the 5.6 line is preferred over everything older', () => {
     const src = readFileSync(new URL('../src/ui/app.js', import.meta.url), 'utf8');

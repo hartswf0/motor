@@ -56,7 +56,10 @@ const S = {
   dragging: null,
   dirty: true,
   compare: false,
-  mode: 'auto',
+  // NOT `mode`: that is the drawing tool above. These two shared a name and the
+  // second quietly won, so pressing D set the assistant's commitment to "draw"
+  // and every later read of it threw. One word, two meanings, no error.
+  commitment: 'auto',
   actingAs: null,
   busy: false,
   abort: false,
@@ -120,6 +123,7 @@ function updateFidelity() {
 
 // ------------------------------------------------------------------- render --
 function rebuild() {
+  if (!S.world) return;            // the first place is still on its way
   const changed = new Set(S.world.journal.changedSince(Math.max(0, S.world.place.tick - 2)));
   const ghosts = currentGhosts();
   renderer.build(S.world, {
@@ -175,6 +179,7 @@ function frame() {
   try {
     // A world editor is not a game. When nothing has changed there is nothing
     // to draw, and drawing it anyway spends a phone's battery on a still image.
+    if (!S.world) { requestAnimationFrame(frame); return; }
     if (!S.dirty && !animating()) { stats.skipped++; requestAnimationFrame(frame); return; }
     if (S.dirty) rebuild();
     renderer.draw(viewProj());
@@ -595,9 +600,9 @@ $('sayInput').addEventListener('keydown', (ev) => {
   if (!hasKey()) { saySomething(v); return; }
   // The same sentence, at four different commitments.
   const once = ev.metaKey ? 'gauntlet' : ev.altKey ? 'deep' : ev.shiftKey ? 'think' : null;
-  const previous = S.mode;
-  if (once) S.mode = once;
-  runAssistant(v).finally(() => { S.mode = previous; });
+  const previous = S.commitment;
+  if (once) S.commitment = once;
+  runAssistant(v).finally(() => { S.commitment = previous; });
 });
 
 // speech, where it exists — never required
@@ -640,8 +645,9 @@ async function runAssistant(request) {
 
   const ctx = context();
   const intent = interpret(request, ctx);
-  const chosen = S.mode === 'auto' ? routeMode(intent) : S.mode;
-  const mode = MODES[chosen];
+  const chosen = S.commitment === 'auto' ? routeMode(intent) : S.commitment;
+  const mode = MODES[chosen] || MODES.think;
+  if (!MODES[chosen]) console.warn(`[CREO] unknown commitment ${chosen}; using Think`);
   S.busy = true; S.abort = false;
   showWorking(chosen, STEP_LABELS.reading);
 
@@ -797,7 +803,8 @@ function applyOperations(operations, modeKey) {
 
 // ------------------------------------------------------------ mode chooser --
 function setMode_(key) {
-  S.mode = key;
+  if (key !== 'auto' && !MODES[key]) key = 'auto';   // never trust a stale value
+  S.commitment = key;
   const chip = $('modeChip');
   chip.textContent = key === 'auto' ? '✦ Auto' : `✦ ${MODES[key].label}`;
   chip.classList.toggle('set', key !== 'auto');
@@ -813,7 +820,7 @@ function openModeMenu() {
 
   const row = (key, label, hint) => {
     const b = document.createElement('button');
-    b.className = S.mode === key ? 'on' : '';
+    b.className = S.commitment === key ? 'on' : '';
     b.innerHTML = `<span>${label}</span><span class="mHint">${hint}</span>`;
     b.onclick = () => { menu.remove(); setMode_(key); };
     menu.append(b);
@@ -1346,7 +1353,7 @@ function openAIPanel() {
     if (sel.value && !sel.value.startsWith('\u2014')) setConfig({ model: sel.value });
     hide('setup');
     localStorage.setItem('creo.sawSetup', '1');
-    setMode_(S.mode);
+    setMode_(S.commitment);
     if (hasKey()) toast(`Ready \u2014 ${getConfig().model || 'model unset'}. Say anything about this place.`);
   };
   $('setupClose').onclick = () => { hide('setup'); localStorage.setItem('creo.sawSetup', '1'); };
@@ -1670,9 +1677,14 @@ async function loadPlace(key) {
       catch { S.world = await loadCached(key); }
     }
   } catch (err) {
-    console.warn('falling back to a synthetic place:', err.message);
-    S.world = buildPlace(synthetic ? key : 'settlement');
+    // Most often this is a place imported in another browser, or cleared
+    // storage: the key survives in localStorage and the file never existed.
+    console.warn(`[CREO] could not open ${key}:`, err.message);
     S.placeKey = synthetic ? key : 'settlement';
+    S.world = buildPlace(S.placeKey);
+    if (!synthetic) {
+      setTimeout(() => toast(`“${key}” is not in this browser any more — showing ${S.placeKey}. Use Take me anywhere to pull it again.`), 400);
+    }
   }
   S.selection.clear(); S.highlight.clear(); S.stroke = null; S.plan = null; S.overlay = null; S.utterances = [];
   $('placeName').textContent = (PLACES.find((p) => p.key === S.placeKey)?.name || S.world.place.name).split(' — ')[0].split(',')[0];
@@ -1683,7 +1695,9 @@ async function loadPlace(key) {
   frameWorld();
   refreshChrome();
   S.dirty = true;
-  localStorage.setItem('creo.place', key);
+  // remember what actually opened, not what was asked for — otherwise a place
+  // that is gone gets written back and 404s again on every single reload
+  localStorage.setItem('creo.place', S.placeKey);
 }
 
 // keyboard: every gesture has a key, because not everyone has a steady hand
@@ -1757,9 +1771,14 @@ minimap = new Minimap($('planCanvas'), {
 $('plan').hidden = false;
 $('planBtn').classList.add('on');
 
+// Order matters: everything that makes the interface usable happens before the
+// one asynchronous step that can fail. Booting used to stop at a 404 and leave
+// the whole app half-built, which read as "nothing works".
 setMode_('auto');
+setMode('select');
 setAuthor(localStorage.getItem('creo.author') || '');
-loadPlace(localStorage.getItem('creo.place') || 'settlement');
+loadPlace(localStorage.getItem('creo.place') || 'settlement')
+  .catch((err) => reportFailure('Could not open that place', err));
 if (shouldShowHelp()) setTimeout(() => openHelp(), 600);
 else if (!S.author) setTimeout(() => toast('Tap “add your name” at the top so the place can remember who changed what.'), 900);
 
