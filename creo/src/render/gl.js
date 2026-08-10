@@ -129,7 +129,7 @@ export class Renderer {
   build(world, opts = {}) {
     const { ghosts = [], selection = new Set(), highlight = new Set(), overlay = null,
             preserved = new Set(), changed = new Set(), fidelity = 'high', hour = 14,
-            cutawayAt = null } = opts;
+            cutawayAt = null, hidden = new Set() } = opts;
     this.fidelity = fidelity;
     const S = new Builder();        // opaque
     const T = new Builder();        // translucent
@@ -141,6 +141,7 @@ export class Renderer {
     const detail = { high: 0, medium: 1, low: 2, symbolic: 3 }[fidelity];
 
     for (const e of ents) {
+      if (hidden.has(e.type)) continue;          // a layer the person turned off
       if (!visibleAt(e, detail)) continue;
       const ring = world.ringOf(e);
       if (!ring || ring.length < 3) continue;

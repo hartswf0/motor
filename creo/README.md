@@ -12,6 +12,13 @@ python3 serve.py 8800            # then open http://localhost:8800
 node tests/run.js                # 87 tests, offline
 ```
 
+**Getting around.** Drag the map to move; scroll or pinch to zoom, toward
+whatever is under the pointer. Right-drag or hold shift to turn. Arrow keys move,
+shift+arrows turn and zoom. **F** fits the whole place, **M** toggles the plan in
+the corner — which shows where you are and can be tapped to go there — **◈**
+chooses what to draw, and **?** explains all of it. The view is clamped so it
+cannot leave the place or end up underground.
+
 **Any location on Earth, by name — from inside the app.** Open the place menu and
 choose *Take me anywhere*. Type a street, a district, a village. Ambiguous names
 show you the matches rather than guessing which Springfield you meant. Central

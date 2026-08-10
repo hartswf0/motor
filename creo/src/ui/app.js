@@ -10,6 +10,7 @@ import { buildPlace, PLACES } from '../places/index.js';
 import { listImported, loadImported, attribution } from '../places/imported.js';
 import { openImportPanel, listCached, loadCached } from './importui.js';
 import { proposeOperations, hasKey, getConfig, setConfig, listModels } from '../ai/operator.js';
+import { Minimap, openLayers, openHelp, shouldShowHelp, hiddenTypes } from './chrome.js';
 import { World } from '../core/world.js';
 import { makeContext } from '../lang/deixis.js';
 import { interpret } from '../lang/interpret.js';
@@ -48,6 +49,10 @@ const S = {
   assistant: false,
   actingAs: null,
   labels: true,
+  layersOff: new Set(),
+  // NOT `plan` — that name already means the current proposal, and clearing a
+  // proposal was switching the minimap off.
+  showPlan: true,
 };
 
 const renderer = new Renderer(canvas);
@@ -111,6 +116,7 @@ function rebuild() {
     preserved: S.preserved,
     changed,
     fidelity: S.fidelity,
+    hidden: hiddenTypes(S.layersOff),
     // Close in on a building and its roof comes off, so the rooms inside are
     // the thing you are working with.
     cutawayAt: S.cam.dist < 45 ? [S.cam.target[0], S.cam.target[1]] : null,
@@ -134,10 +140,28 @@ function currentGhosts() {
   return (src.ghosts || []).map((g) => ({ ...g, __invalid: bad.has(g.id) }));
 }
 
+let minimap = null;
+let planTick = 0;
+let frameErrors = 0;
 function frame() {
-  if (S.dirty) rebuild();
-  renderer.draw(viewProj());
-  drawLabels();
+  // One bad frame used to kill the loop outright: rendering froze while the
+  // world went on changing underneath, which looks like everything breaking at
+  // once. Report it and keep drawing.
+  try {
+    if (S.dirty) rebuild();
+    renderer.draw(viewProj());
+    drawLabels();
+    // The plan changes slowly; no reason to redraw it sixty times a second.
+    if (minimap && S.showPlan && (planTick++ % 6 === 0)) {
+      minimap.draw(S.world, { camera: S.cam, selection: S.selection, hidden: hiddenTypes(S.layersOff) });
+    }
+  } catch (err) {
+    if (frameErrors++ < 3) {
+      console.error('frame failed:', err);
+      toast(`Something went wrong drawing this: ${String(err.message).slice(0, 80)}`);
+    }
+    if (frameErrors === 4) console.error('further frame errors suppressed');
+  }
   requestAnimationFrame(frame);
 }
 
@@ -175,8 +199,9 @@ function drawLabels() {
     }
     // What OSM names at a point — shops, stops, clinics — close in only.
     if (S.labels !== false && S.cam.dist < 260) {
+      const hiddenNow = hiddenTypes(S.layersOff);
       for (const e of w.entities()) {
-        if (e.type !== 'marker') continue;
+        if (e.type !== 'marker' || hiddenNow.has('marker')) continue;
         const c = G.centroid(w.ringOf(e));
         wanted.push({ id: `poi_${e.id}`, text: e.name, at: [c[0], c[1], e.zTop + 0.8], cls: 'poi' });
       }
@@ -232,19 +257,32 @@ canvas.addEventListener('pointerdown', (ev) => {
     if (S.mode === 'draw') {
       const p = rayToGround(S.world, rayAt(ev.clientX, ev.clientY));
       if (p) { S.stroke = [p]; S.strokeClosed = false; gesture = 'draw'; S.dirty = true; }
-    } else {
-      const hit = pick(S.world, rayAt(ev.clientX, ev.clientY), { fidelity: S.fidelity });
-      if (hit.entity && S.selection.has(hit.entity.id)) {
-        gesture = 'move';
-        S.dragging = { id: hit.entity.id, from: hit.point, ring0: S.world.ringOf(hit.entity), path0: hit.entity.path };
-      } else gesture = 'orbit';
+      return;
+    }
+    const hit = pick(S.world, rayAt(ev.clientX, ev.clientY), { fidelity: S.fidelity });
+    if (hit.entity && S.selection.has(hit.entity.id)) {
+      gesture = 'move';
+      S.dragging = { id: hit.entity.id, from: hit.point, ring0: S.world.ringOf(hit.entity), path0: hit.entity.path };
+      return;
+    }
+    // Dragging moves the map, the way every map anyone has used moves.
+    // Turning the view is the deliberate gesture: right button, or hold shift.
+    if (ev.button === 2 || ev.shiftKey || ev.ctrlKey || ev.altKey) gesture = 'orbit';
+    else {
+      const grab = rayToGround(S.world, rayAt(ev.clientX, ev.clientY));
+      gesture = grab ? { kind: 'pan', grab } : 'orbit';
     }
   } else if (pointers.size === 2) {
-    gesture = 'pinch';
     const [a, b] = [...pointers.values()];
-    gesture = { kind: 'pinch', d0: Math.hypot(a.x - b.x, a.y - b.y), dist0: S.cam.dist, mid: [(a.x + b.x) / 2, (a.y + b.y) / 2] };
+    gesture = {
+      kind: 'pinch',
+      d0: Math.hypot(a.x - b.x, a.y - b.y), dist0: S.cam.dist,
+      mid: [(a.x + b.x) / 2, (a.y + b.y) / 2],
+      angle0: Math.atan2(b.y - a.y, b.x - a.x), yaw0: S.cam.yaw,
+    };
   }
 });
+canvas.addEventListener('contextmenu', (ev) => ev.preventDefault());
 
 canvas.addEventListener('pointermove', (ev) => {
   const pt = pointers.get(ev.pointerId);
@@ -262,18 +300,32 @@ canvas.addEventListener('pointermove', (ev) => {
     if (p) dragTo(p);
     return;
   }
+  if (gesture && gesture.kind === 'pan' && pointers.size === 1) {
+    // Keep the ground the finger grabbed underneath the finger.
+    const now = rayToGround(S.world, rayAt(ev.clientX, ev.clientY));
+    if (now) {
+      S.cam.target[0] += gesture.grab[0] - now[0];
+      S.cam.target[1] += gesture.grab[1] - now[1];
+      clampCamera();
+    }
+    return;
+  }
   if (gesture === 'orbit' && pointers.size === 1) {
     S.cam.yaw -= dx * 0.006;
-    S.cam.pitch = Math.max(0.12, Math.min(1.45, S.cam.pitch + dy * 0.005));
+    S.cam.pitch = Math.max(0.14, Math.min(1.45, S.cam.pitch + dy * 0.005));
+    clampCamera();
     return;
   }
   if (gesture && gesture.kind === 'pinch' && pointers.size === 2) {
     const [a, b] = [...pointers.values()];
     const d = Math.hypot(a.x - b.x, a.y - b.y);
-    S.cam.dist = Math.max(8, Math.min(4000, gesture.dist0 * (gesture.d0 / Math.max(1, d))));
+    S.cam.dist = Math.max(12, Math.min(4000, gesture.dist0 * (gesture.d0 / Math.max(1, d))));
+    const angle = Math.atan2(b.y - a.y, b.x - a.x);
+    S.cam.yaw = gesture.yaw0 - (angle - gesture.angle0);
     const mid = [(a.x + b.x) / 2, (a.y + b.y) / 2];
     panBy(mid[0] - gesture.mid[0], mid[1] - gesture.mid[1]);
     gesture.mid = mid;
+    clampCamera();
     updateFidelity();
   }
 });
@@ -297,7 +349,7 @@ canvas.addEventListener('pointerup', (ev) => {
     showTools();
   } else if (gesture === 'move' && S.dragging) {
     commitDrag();
-  } else if (moved < 6 && pointers.size === 0) {
+  } else if (moved < 6 && Date.now() - pt.t < 700 && pointers.size === 0) {
     tap(ev.clientX, ev.clientY, ev.shiftKey);
   }
   if (pointers.size === 0) gesture = null;
@@ -305,15 +357,48 @@ canvas.addEventListener('pointerup', (ev) => {
 
 canvas.addEventListener('wheel', (ev) => {
   ev.preventDefault();
-  S.cam.dist = Math.max(8, Math.min(4000, S.cam.dist * (1 + Math.sign(ev.deltaY) * 0.11)));
+  const before = rayToGround(S.world, rayAt(ev.clientX, ev.clientY));
+  S.cam.dist = Math.max(12, Math.min(4000, S.cam.dist * (1 + Math.sign(ev.deltaY) * 0.11)));
+  // Zoom toward what is under the cursor, not toward the middle of the screen.
+  const after = rayToGround(S.world, rayAt(ev.clientX, ev.clientY));
+  if (before && after) {
+    S.cam.target[0] += before[0] - after[0];
+    S.cam.target[1] += before[1] - after[1];
+  }
+  clampCamera();
   updateFidelity();
 }, { passive: false });
+
+/**
+ * Keep the view somewhere a person can recover from: over the place rather than
+ * out in the void, and above the ground rather than inside a building.
+ */
+function clampCamera() {
+  const b = S.world.place.bounds();
+  const margin = Math.max(80, Math.hypot(b[2] - b[0], b[3] - b[1]) * 0.15);
+  S.cam.target[0] = Math.max(b[0] - margin, Math.min(b[2] + margin, S.cam.target[0]));
+  S.cam.target[1] = Math.max(b[1] - margin, Math.min(b[3] + margin, S.cam.target[1]));
+  S.cam.target[2] = S.world.place.groundAt(S.cam.target[0], S.cam.target[1]);
+  S.cam.pitch = Math.max(0.14, Math.min(1.45, S.cam.pitch));
+  // never end up underground
+  const e = eye();
+  const floor = S.world.place.groundAt(e[0], e[1]) + 3;
+  if (e[2] < floor) S.cam.pitch = Math.min(1.45, S.cam.pitch + (floor - e[2]) / Math.max(20, S.cam.dist));
+  S.dirty = true;
+}
+
+/** Frame the whole place — the way back when you are lost. */
+function frameAll() {
+  frameWorld();
+  toast('Showing the whole place.');
+}
 
 function panBy(dx, dy) {
   const scale = S.cam.dist * 0.0022;
   const yaw = S.cam.yaw;
   S.cam.target[0] += (Math.sin(yaw) * dx + Math.cos(yaw) * dy) * scale;
   S.cam.target[1] += (-Math.cos(yaw) * dx + Math.sin(yaw) * dy) * scale;
+  clampCamera();
 }
 
 function tap(x, y, additive) {
@@ -825,6 +910,7 @@ function showTools() {
   };
 
   if (S.stroke && !ids.length) {
+    row.append(mk('Note here', () => openNote()));
     title.textContent = S.strokeClosed
       ? `${G.area(S.stroke).toFixed(0)} m² drawn — say what belongs here, or:`
       : `${G.perimeter(S.stroke, false).toFixed(0)} m drawn — say what this is, or:`;
@@ -859,6 +945,7 @@ function showTools() {
     row.append(num);
   }
   row.append(
+    mk('Note here', () => openNote(), 'note'),
     mk('Keep', () => saySomething('keep these'), 'keep'),
     mk('Remove', () => saySomething('remove this')),
     mk('Why is it here?', () => saySomething('why are you here?')),
@@ -867,6 +954,41 @@ function showTools() {
   if (ids.length === 2) row.append(mk('Connect these', () => saySomething('connect these')));
   row.append(mk('Three futures', () => saySomething('show three radically different futures for this')));
   show('tools');
+}
+
+/**
+ * Leaving a note should not require knowing which sentence the parser likes.
+ * Type anything; it lands where you tapped, with your name on it.
+ */
+function openNote() {
+  document.querySelector('.notePanel')?.remove();
+  if (!S.pointer && !S.selection.size && !S.stroke) { toast('Tap a spot first, then leave your note.'); return; }
+  const panel = document.createElement('div');
+  panel.className = 'menu notePanel';
+  panel.style.left = '12px';
+  panel.style.bottom = `calc(150px + var(--safe))`;
+  panel.style.width = 'min(400px, calc(100vw - 24px))';
+  const label = document.createElement('div');
+  label.className = 'menuLabel';
+  label.textContent = 'What do you want to say about this spot?';
+  const input = document.createElement('input');
+  input.className = 'nameInput';
+  input.placeholder = 'it floods here when the rain is bad';
+  input.setAttribute('aria-label', 'Your note');
+  const go = document.createElement('button');
+  go.className = 'tool'; go.textContent = 'Leave it here';
+  go.style.margin = '0 6px 6px';
+  const submit = () => {
+    const text = input.value.trim();
+    if (!text) return;
+    panel.remove();
+    saySomething(text);
+  };
+  go.onclick = submit;
+  input.onkeydown = (e) => { if (e.key === 'Enter') submit(); if (e.key === 'Escape') panel.remove(); };
+  panel.append(label, input, go);
+  document.body.append(panel);
+  input.focus();
 }
 
 function quickEdit(patch, label) {
@@ -883,6 +1005,21 @@ function setMode(m) {
   if (m === 'draw') toast('Draw a line, or a loop for an area.');
 }
 $('modeDraw').onclick = () => setMode(S.mode === 'draw' ? 'select' : 'draw');
+
+$('fitBtn').onclick = () => frameAll();
+$('planBtn').onclick = () => {
+  S.showPlan = !S.showPlan;
+  $('plan').hidden = !S.showPlan;
+  $('planBtn').classList.toggle('on', S.showPlan);
+};
+$('layersBtn').onclick = () => openLayers({
+  anchorEl: $('layersBtn'),
+  off: S.layersOff,
+  onChange: () => { S.dirty = true; },
+  labelsOn: () => S.labels !== false,
+  onLabels: () => { S.labels = S.labels === false; S.dirty = true; },
+});
+$('helpBtn').onclick = () => openHelp();
 
 $('undoBtn').onclick = () => { const e = S.world.undo(); if (e) toast(`Undone: ${e.label}`); refreshChrome(); S.dirty = true; };
 $('redoBtn').onclick = () => { const e = S.world.redo(); if (e) toast(`Redone: ${e.label}`); refreshChrome(); S.dirty = true; };
@@ -1068,31 +1205,42 @@ addEventListener('keydown', (ev) => {
   if (k === 'z' && (ev.metaKey || ev.ctrlKey)) { ev.preventDefault(); ev.shiftKey ? $('redoBtn').click() : $('undoBtn').click(); }
   else if (k === 'd') setMode(S.mode === 'draw' ? 'select' : 'draw');
   else if (k === 'b') showBranches();
-  else if (k === 'l') { S.labels = S.labels === false; toast(S.labels === false ? 'Labels off.' : 'Labels on.'); }
+  else if (k === 'l') { S.labels = S.labels === false; S.dirty = true; toast(S.labels === false ? 'Names hidden.' : 'Names shown.'); }
+  else if (k === 'f') frameAll();
+  else if (k === 'm') $('planBtn').click();
+  else if (k === '?' || (k === '/' && ev.shiftKey)) { ev.preventDefault(); openHelp(); }
+  else if (k === 'n') openNote();
   else if (k === '/') { ev.preventDefault(); $('sayInput').focus(); }
   else if (k === 'escape') { S.selection.clear(); S.stroke = null; hide('tools'); hide('proposal'); S.plan = null; S.dirty = true; }
-  else if (k === 'arrowleft') { S.cam.yaw -= 0.12; }
-  else if (k === 'arrowright') { S.cam.yaw += 0.12; }
-  else if (k === 'arrowup') { S.cam.dist *= 0.9; updateFidelity(); }
-  else if (k === 'arrowdown') { S.cam.dist *= 1.1; updateFidelity(); }
-  // Without these, a keyboard user could act on exactly one point — wherever
-  // the view happened to open — for the whole session.
-  else if ('wasd'.includes(k)) {
-    const step = S.cam.dist * 0.06;
-    const dx = k === 'a' ? -step : k === 'd' ? step : 0;
-    const dy = k === 'w' ? step : k === 's' ? -step : 0;
-    const yaw = S.cam.yaw;
-    S.cam.target[0] += Math.cos(yaw) * dy - Math.sin(yaw) * dx;
-    S.cam.target[1] += Math.sin(yaw) * dy + Math.cos(yaw) * dx;
-    S.cam.target[2] = S.world.place.groundAt(S.cam.target[0], S.cam.target[1]);
-    setCrosshair(true);
-  } else if (k === 'enter' || k === ' ') {
+  // Arrows move you, which is what arrows do. Hold shift to turn and zoom.
+  else if (k.startsWith('arrow')) {
+    ev.preventDefault();
+    if (ev.shiftKey) {
+      if (k === 'arrowleft') S.cam.yaw -= 0.14;
+      else if (k === 'arrowright') S.cam.yaw += 0.14;
+      else if (k === 'arrowup') S.cam.dist *= 0.88;
+      else S.cam.dist *= 1.14;
+      clampCamera(); updateFidelity();
+    } else {
+      const step = S.cam.dist * 0.08;
+      const dx = k === 'arrowleft' ? -step : k === 'arrowright' ? step : 0;
+      const dy = k === 'arrowup' ? step : k === 'arrowdown' ? -step : 0;
+      const yaw = S.cam.yaw;
+      S.cam.target[0] += Math.cos(yaw) * dy - Math.sin(yaw) * dx;
+      S.cam.target[1] += Math.sin(yaw) * dy + Math.cos(yaw) * dx;
+      clampCamera();
+      setCrosshair(true);
+    }
+  }
+  else if (k === '+' || k === '=') { S.cam.dist *= 0.88; clampCamera(); updateFidelity(); }
+  else if (k === '-' || k === '_') { S.cam.dist *= 1.14; clampCamera(); updateFidelity(); }
+  else if (k === 'enter' || k === ' ') {
     ev.preventDefault();
     setCrosshair(true);
     const r = canvas.getBoundingClientRect();
     tap(r.left + r.width / 2, r.top + r.height / 2, ev.shiftKey);
     const e = [...S.selection].map((id) => S.world.get(id)).filter(Boolean)[0];
-    toast(e ? `Selected ${labelFor(e)}` : 'Nothing there — move with W A S D and try again.');
+    toast(e ? `Chose ${labelFor(e)}` : 'Nothing there — move with the arrow keys and try again.');
   }
 });
 
@@ -1110,9 +1258,19 @@ function setCrosshair(on) {
 }
 
 // ------------------------------------------------------------------- boot ---
+minimap = new Minimap($('planCanvas'), {
+  onGo: (p) => {
+    S.cam.target = [p[0], p[1], S.world.place.groundAt(p[0], p[1])];
+    clampCamera();
+  },
+});
+$('plan').hidden = false;
+$('planBtn').classList.add('on');
+
 setAuthor(localStorage.getItem('creo.author') || '');
 loadPlace(localStorage.getItem('creo.place') || 'settlement');
-if (!S.author) setTimeout(() => toast('Tap “add your name” at the top so the place can remember who changed what.'), 900);
+if (shouldShowHelp()) setTimeout(() => openHelp(), 600);
+else if (!S.author) setTimeout(() => toast('Tap “add your name” at the top so the place can remember who changed what.'), 900);
 requestAnimationFrame(frame);
 addEventListener('resize', () => { S.dirty = true; });
 
@@ -1123,6 +1281,8 @@ window.CREO = {
   interpret: (t) => interpret(t, context()),
   plan: (t) => { const c = context(); return plan(S.world, interpret(t, c), c); },
   select: (ids) => { S.selection = new Set(ids); S.dirty = true; showTools(); },
+  frameAll, openNote, openHelp,
+  _minimap: () => minimap,
   pointAt: (p) => { S.pointer = p; },
   draw: (pts, closed) => { S.stroke = pts; S.strokeClosed = closed; S.dirty = true; },
   commit: () => $('propCommit').click(),

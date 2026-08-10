@@ -29,6 +29,18 @@
 <!-- Aiming point for anyone working without a pointing device. -->
 <div id="crosshair" hidden aria-hidden="true"></div>
 
+<!-- Where you are, in a place you can see all of. Tap it to go. -->
+<div id="plan" hidden>
+  <canvas id="planCanvas" aria-label="Plan of the whole place. Tap to move there."></canvas>
+</div>
+
+<div id="viewTools">
+  <button id="fitBtn" class="icon small" title="Show the whole place (F)" aria-label="Show the whole place">⤢</button>
+  <button id="planBtn" class="icon small" title="Plan (M)" aria-label="Toggle the plan">▣</button>
+  <button id="layersBtn" class="icon small" title="What to show" aria-label="Layers">◈</button>
+  <button id="helpBtn" class="icon small" title="Help (?)" aria-label="Help">?</button>
+</div>
+
 <div id="youAreHere" class="pill ghosted" hidden>you are here</div>
 <!-- Real places carry their licence where a person can see it, not in a file. -->
 <div id="attribution" hidden></div>
