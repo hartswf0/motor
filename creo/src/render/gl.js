@@ -151,9 +151,14 @@ export class Renderer {
 
       if (e.type === 'tree') {
         this.buildTree(S, e, ring, detail);
+      } else if (e.type === 'observation') {
+        // What someone said about a place should mark it, not bury it. An
+        // opaque fill over a drawn area hid the very thing being discussed.
+        T.polygon(ring, e.zTop + 0.05, col, 0.18);
+        L.ring(ring, e.zTop + 0.06, col, 0.95);
+        this.buildPin(S, L, e, ring);
       } else if (isFlat(e)) {
         S.polygon(ring, e.zTop + 0.03, col, 1);
-        if (e.type === 'observation') this.buildPin(S, L, e, ring);
       } else {
         // Standing inside a building, the roof is the one thing you do not want
         // to look at. What matters changes with where you are (§17).
@@ -240,12 +245,19 @@ export class Renderer {
       for (let j = 0; j < w.ny; j++) {
         for (let i = 0; i < w.nx; i++) {
           const d = w.depth[j * w.nx + i];
-          if (d <= 0.02) continue;
+          // A film a centimetre deep is not what anyone means by flooding, and
+          // painting it made the whole place read as a dark wash.
+          if (d <= 0.05) continue;
           const x = w.bounds[0] + i * w.cell, y = w.bounds[1] + j * w.cell;
           const z = w.elev[j * w.nx + i] + d;
-          const t = Math.min(1, d / 0.45);
-          const col = [0.16 + 0.06 * (1 - t), 0.45 - 0.16 * t, 0.72 - 0.12 * t];
-          T.quad([x, y, z], [x + w.cell, y, z], [x + w.cell, y + w.cell, z], [x, y + w.cell, z], col, 0.35 + 0.42 * t);
+          const t = Math.min(1, d / 0.5);
+          // shallow reads pale and thin, deep reads saturated — depth you can see
+          const col = [
+            0.42 - 0.30 * t,
+            0.72 - 0.36 * t,
+            0.92 - 0.20 * t,
+          ];
+          T.quad([x, y, z], [x + w.cell, y, z], [x + w.cell, y + w.cell, z], [x, y + w.cell, z], col, 0.30 + 0.45 * t);
         }
       }
     }
@@ -287,6 +299,9 @@ export class Renderer {
     }
     if (overlay.stroke) {
       const s = overlay.stroke;
+      if (overlay.strokeClosed && s.length > 2) {
+        T.polygon(s, world.place.groundAt(...G.centroid(s)) + 0.1, PALETTE.select, 0.14);
+      }
       for (let i = 0; i < s.length - 1; i++) {
         L.segment([s[i][0], s[i][1], world.place.groundAt(...s[i]) + 0.12],
                   [s[i + 1][0], s[i + 1][1], world.place.groundAt(...s[i + 1]) + 0.12], PALETTE.select, 1);

@@ -272,6 +272,54 @@ export function circleRing(cx, cy, r, segments = 24) {
   return out;
 }
 
+/** Does this ring cross itself? Ear clipping produces nonsense if it does. */
+export function selfIntersects(ring) {
+  const n = ring.length;
+  if (n < 4) return false;
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 2; j < n; j++) {
+      if (i === 0 && j === n - 1) continue;        // adjacent through the closing edge
+      if (segIntersect(ring[i], ring[(i + 1) % n], ring[j], ring[(j + 1) % n])) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Make a freehand loop usable.
+ *
+ * A finger dragged around an area produces hundreds of jittering points, often
+ * crossing itself near the start and end. Fed straight to the triangulator that
+ * came out as a bowtie of opaque colour covering the screen. This thins the
+ * points, and if the result still crosses itself, falls back to the convex hull
+ * — which is bigger than what was drawn, so the caller is told.
+ */
+export function cleanRing(ring, tol = 1.0) {
+  if (!ring || ring.length < 3) return { ring: null, repaired: false, why: 'too few points' };
+  let out = [ring[0]];
+  for (let i = 1; i < ring.length; i++) {
+    if (dist(ring[i], out[out.length - 1]) >= tol) out.push(ring[i]);
+  }
+  if (out.length > 3 && dist(out[0], out[out.length - 1]) < tol) out.pop();
+  if (out.length < 3) return { ring: null, repaired: false, why: 'the loop was too small' };
+
+  // drop spikes: a vertex whose neighbours are far closer to each other than to it
+  for (let pass = 0; pass < 2 && out.length > 4; pass++) {
+    const keep = [];
+    for (let i = 0; i < out.length; i++) {
+      const a = out[(i - 1 + out.length) % out.length], b = out[i], c = out[(i + 1) % out.length];
+      const spike = dist(a, b) + dist(b, c) > dist(a, c) * 6;
+      if (!spike) keep.push(b);
+    }
+    if (keep.length >= 3 && keep.length < out.length) out = keep; else break;
+  }
+
+  if (!selfIntersects(out)) return { ring: out, repaired: false };
+  const hull = convexHull(out);
+  if (hull.length >= 3) return { ring: hull, repaired: true, why: 'the loop crossed itself, so its outline was used' };
+  return { ring: null, repaired: false, why: 'that shape could not be read as an area' };
+}
+
 export function simplify(ring, tol = 0.25) {
   if (ring.length <= 4) return ring.slice();
   const keep = [ring[0]];

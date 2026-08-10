@@ -11,6 +11,8 @@ import { listImported, loadImported, attribution } from '../places/imported.js';
 import { openImportPanel, listCached, loadCached } from './importui.js';
 import { proposeOperations, hasKey, getConfig, setConfig, listModels } from '../ai/operator.js';
 import { Minimap, openLayers, openHelp, shouldShowHelp, hiddenTypes } from './chrome.js';
+import { runWater } from '../sim/water.js';
+import { toGeoJSON } from '../world/export.js';
 import { World } from '../core/world.js';
 import { makeContext } from '../lang/deixis.js';
 import { interpret } from '../lang/interpret.js';
@@ -214,11 +216,20 @@ function drawLabels() {
     if (!ring) continue;
     wanted.push({ id: `sel_${id}`, text: labelFor(e), at: [...G.centroid(ring), e.zTop + 1.2], cls: 'sel' });
   }
-  // Two people who spoke about the same spot must both stay readable.
+  // Two people who spoke about the same spot must both stay readable — and no
+  // label belongs underneath a button.
   const placed = [];
+  const blocked = [
+    { x0: 0, y0: 0, x1: 260, y1: 108 },                               // place chip + licence
+    { x0: innerWidth - 220, y0: 0, x1: innerWidth, y1: 260 },          // name, undo, view tools
+    { x0: innerWidth - 230, y0: innerHeight - 260, x1: innerWidth, y1: innerHeight }, // the plan
+    { x0: 0, y0: innerHeight - 110, x1: innerWidth, y1: innerHeight }, // the say bar
+  ];
+  const inChrome = (x, y) => blocked.some((b) => x > b.x0 && x < b.x1 && y > b.y0 && y < b.y1);
   host.replaceChildren(...wanted.map((l) => {
     const p = project(l.at);
     if (!p || p[0] < -100 || p[0] > innerWidth + 100 || p[1] < 0 || p[1] > innerHeight) return document.createTextNode('');
+    if (inChrome(p[0], p[1])) return document.createTextNode('');
     let y = p[1];
     for (let guard = 0; guard < 12; guard++) {
       const clash = placed.find((q) => Math.abs(q[0] - p[0]) < 150 && Math.abs(q[1] - y) < 22);
@@ -338,10 +349,20 @@ canvas.addEventListener('pointerup', (ev) => {
 
   if (gesture === 'draw' && S.stroke) {
     if (S.stroke.length > 3 && G.dist(S.stroke[0], S.stroke[S.stroke.length - 1]) < Math.max(6, G.perimeter(S.stroke, false) * 0.22)) {
-      S.strokeClosed = true;                 // a loop is an area
-      toast(`Area: ${G.area(S.stroke).toFixed(0)} m². Now say what about it.`);
+      // A freehand loop is not a polygon until it is made into one.
+      const cleaned = G.cleanRing(S.stroke, Math.max(0.8, S.cam.dist * 0.004));
+      if (!cleaned.ring) {
+        S.stroke = null; S.strokeClosed = false; S.dirty = true;
+        toast(cleaned.why || 'That did not read as an area — try a rounder loop.');
+        setMode('select');
+        return;
+      }
+      S.stroke = cleaned.ring;
+      S.strokeClosed = true;
+      toast(`${G.area(S.stroke).toFixed(0)} m² selected${cleaned.repaired ? ` — ${cleaned.why}` : ''}. Now say what about it, or press Note here.`);
     } else {
       S.strokeClosed = false;
+      S.stroke = G.resample(S.stroke, Math.max(1, S.cam.dist * 0.006));
       toast(`Line: ${G.perimeter(S.stroke, false).toFixed(0)} m. Now say what about it.`);
     }
     setMode('select');
@@ -1021,6 +1042,93 @@ $('layersBtn').onclick = () => openLayers({
 });
 $('helpBtn').onclick = () => openHelp();
 
+/**
+ * Seeing the water was the whole point of modelling it, and it was reachable
+ * only by saying the right sentence. It is a button now, with a scale, and it
+ * says what it assumed.
+ */
+function toggleRain() {
+  if (S.overlay?.kind === 'water') {
+    S.overlay = null; S.dirty = true;
+    $('waterLegend').hidden = true;
+    $('rainBtn').classList.remove('on');
+    return;
+  }
+  toast('Running the rain…');
+  setTimeout(() => {
+    const w = runWater(S.world, { rain: 'heavy' });
+    S.overlay = { kind: 'water', water: w };
+    S.dirty = true;
+    $('rainBtn').classList.add('on');
+    $('waterLegend').hidden = false;
+    $('legendMax').textContent = `${(w.maxDepth * 100).toFixed(0)} cm`;
+    const wet = [...w.exposure.entries()].filter(([, v]) => v.maxDepth > 0.05).length;
+    $('legendNote').textContent =
+      `${w.floodedArea.toFixed(0)} m² over 5 cm · ${wet} built things get wet. `
+      + `${w.model.assumptions.rainfall_mm.heavy} mm over ${w.model.assumptions.duration_min} min, `
+      + `${w.cell} m grid. Comparative, not survey: the direction is robust, the depth is not.`;
+    toast(`Deepest ${(w.maxDepth * 100).toFixed(0)} cm · ${w.floodedArea.toFixed(0)} m² over 5 cm.`);
+  }, 30);
+}
+$('rainBtn').onclick = toggleRain;
+
+/** Take it away: what people said, and what was proposed, as ordinary GIS data. */
+$('exportBtn').onclick = (ev) => {
+  document.querySelector('.exportPanel')?.remove();
+  const panel = document.createElement('div');
+  panel.className = 'menu exportPanel';
+  const r = ev.currentTarget.getBoundingClientRect();
+  panel.style.right = '12px';
+  panel.style.top = `${r.bottom + 8}px`;
+  const head = document.createElement('div');
+  head.className = 'menuLabel';
+  head.textContent = 'Take it away';
+  panel.append(head);
+
+  const notes = S.world.entities().filter((e) => e.type === 'observation');
+  const mine = S.world.entities().filter((e) => e.epistemic === 'PROPOSED' || e.type === 'observation');
+
+  const opt = (label, sub, fn) => {
+    const b = document.createElement('button');
+    b.innerHTML = `${label}<span class="sub">${sub}</span>`;
+    b.onclick = () => { panel.remove(); fn(); };
+    panel.append(b);
+  };
+  opt('What people said', `${notes.length} note${notes.length === 1 ? '' : 's'}, as GeoJSON`,
+    () => download(filterGeoJSON((f) => f.properties.type === 'observation'), 'notes'));
+  opt('Notes and proposals', `${mine.length} feature${mine.length === 1 ? '' : 's'} added to this place`,
+    () => download(filterGeoJSON((f) => f.properties.type === 'observation' || f.properties.epistemic === 'PROPOSED'), 'proposals'));
+  opt('This whole branch', `${S.world.entities().length} features, everything visible`,
+    () => download(toGeoJSON(S.world), 'place'));
+  opt('The event log', 'who changed what, when, and from which words',
+    () => downloadText(JSON.stringify(S.world.journal.toJSON().events.map((e) => ({
+      id: e.id, at: e.tick, by: e.author, did: e.label, said: e.utterance?.text || null, branch: e.branch,
+    })), null, 2), 'history', 'json'));
+
+  document.body.append(panel);
+  setTimeout(() => document.addEventListener('pointerdown', function off(e) {
+    if (!panel.contains(e.target)) { panel.remove(); document.removeEventListener('pointerdown', off); }
+  }), 0);
+};
+
+function filterGeoJSON(pred) {
+  const fc = toGeoJSON(S.world);
+  return { ...fc, features: fc.features.filter(pred) };
+}
+function download(geojson, kind) {
+  if (!geojson.features.length) { toast('Nothing to take away yet.'); return; }
+  downloadText(JSON.stringify(geojson, null, 2), kind, 'geojson');
+  toast(`${geojson.features.length} features saved. Every one carries who said it and when.`);
+}
+function downloadText(text, kind, ext) {
+  const name = `${S.placeKey}-${kind}-${new Date().toISOString().slice(0, 10)}.${ext}`;
+  const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+  const a = document.createElement('a');
+  a.href = url; a.download = name;
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
 $('undoBtn').onclick = () => { const e = S.world.undo(); if (e) toast(`Undone: ${e.label}`); refreshChrome(); S.dirty = true; };
 $('redoBtn').onclick = () => { const e = S.world.redo(); if (e) toast(`Redone: ${e.label}`); refreshChrome(); S.dirty = true; };
 
@@ -1210,6 +1318,7 @@ addEventListener('keydown', (ev) => {
   else if (k === 'm') $('planBtn').click();
   else if (k === '?' || (k === '/' && ev.shiftKey)) { ev.preventDefault(); openHelp(); }
   else if (k === 'n') openNote();
+  else if (k === 'r') toggleRain();
   else if (k === '/') { ev.preventDefault(); $('sayInput').focus(); }
   else if (k === 'escape') { S.selection.clear(); S.stroke = null; hide('tools'); hide('proposal'); S.plan = null; S.dirty = true; }
   // Arrows move you, which is what arrows do. Hold shift to turn and zoom.

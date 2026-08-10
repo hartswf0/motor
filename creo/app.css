@@ -211,6 +211,17 @@ section p { margin: 0 0 10px; color: var(--dim); font-size: 13px; }
 .helpBox .btn { margin-top: 14px; }
 @media (max-width: 520px) { .helpRow { grid-template-columns: 1fr; gap: 2px; } }
 
+#waterLegend {
+  position: fixed; left: 12px; bottom: calc(74px + var(--safe)); z-index: 6;
+  background: rgba(12,14,18,.86); border: 1px solid var(--edge); border-radius: 10px;
+  padding: 8px 10px; width: 210px; pointer-events: none;
+}
+.legendTitle { font-size: 11px; color: var(--ink); margin-bottom: 6px; }
+.legendScale { display: flex; height: 8px; border-radius: 3px; overflow: hidden; }
+.legendScale i { flex: 1; }
+.legendEnds { display: flex; justify-content: space-between; font-size: 10px; color: var(--dim); margin-top: 3px; }
+.legendNote { font-size: 10.5px; color: var(--dim); margin-top: 6px; line-height: 1.35; }
+
 #labels { position: fixed; inset: 0; pointer-events: none; }
 #labels .label {
   position: absolute; transform: translate(-50%, -100%);
