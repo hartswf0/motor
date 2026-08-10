@@ -8,19 +8,20 @@
       -1.2325,
       36.8835
     ],
-    "fetchedAt": "2026-08-10T15:47:27.861Z",
+    "fetchedAt": "2026-08-10T17:56:52.752Z",
     "scale": "neighbourhood",
     "counts": {
       "buildings": 392,
-      "roads": 87,
+      "roads": 88,
       "paths": 1,
       "water": 1,
-      "surfaces": 4,
+      "surfaces": 5,
       "trees": 0,
       "walls": 8,
-      "skipped": 0
+      "skipped": 0,
+      "markers": 16
     },
-    "relief": 66,
+    "relief": 54.7,
     "source": "OpenStreetMap (ODbL)"
   }
 ]

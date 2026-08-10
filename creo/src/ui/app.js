@@ -9,6 +9,7 @@ import * as G from '../core/geom.js';
 import { buildPlace, PLACES } from '../places/index.js';
 import { listImported, loadImported, attribution } from '../places/imported.js';
 import { openImportPanel, listCached, loadCached } from './importui.js';
+import { proposeOperations, hasKey, getConfig, setConfig, listModels } from '../ai/operator.js';
 import { World } from '../core/world.js';
 import { makeContext } from '../lang/deixis.js';
 import { interpret } from '../lang/interpret.js';
@@ -44,6 +45,9 @@ const S = {
   dragging: null,
   dirty: true,
   compare: false,
+  assistant: false,
+  actingAs: null,
+  labels: true,
 };
 
 const renderer = new Renderer(canvas);
@@ -146,6 +150,37 @@ function drawLabels() {
     for (const e of w.entities()) {
       if (e.type === 'observation') wanted.push({ id: e.id, text: e.evidence?.[0]?.text || e.name, at: [...G.centroid(w.ringOf(e)), e.zTop + 3.6], cls: 'obs' });
     }
+    // Street names, where the source names them. A place whose streets are
+    // nameless does not read as anywhere in particular.
+    if (S.labels !== false && S.cam.dist < 700) {
+      // One label per street, not one per fragment: a way clipped into four
+      // pieces is still one road, and shouting its name four times is noise.
+      const streets = new Map();
+      for (const e of w.entities()) {
+        if (!['road', 'path', 'rail', 'stream'].includes(e.type)) continue;
+        if (!e.name) continue;
+        const line = e.path;
+        if (!line || line.length < 2) continue;
+        const len = G.perimeter(line, false);
+        if (len < S.cam.dist * 0.12) continue;              // too short to earn a label here
+        const best = streets.get(e.name);
+        if (!best || len > best.len) {
+          const mid = line.length > 2 ? line[Math.floor(line.length / 2)] : G.lerp2(line[0], line[1], 0.5);
+          streets.set(e.name, { len, mid, id: e.id });
+        }
+      }
+      for (const [name, st] of streets) {
+        wanted.push({ id: `st_${st.id}`, text: name, at: [st.mid[0], st.mid[1], w.place.groundAt(st.mid[0], st.mid[1]) + 0.6], cls: 'street' });
+      }
+    }
+    // What OSM names at a point — shops, stops, clinics — close in only.
+    if (S.labels !== false && S.cam.dist < 260) {
+      for (const e of w.entities()) {
+        if (e.type !== 'marker') continue;
+        const c = G.centroid(w.ringOf(e));
+        wanted.push({ id: `poi_${e.id}`, text: e.name, at: [c[0], c[1], e.zTop + 0.8], cls: 'poi' });
+      }
+    }
   }
   for (const id of S.selection) {
     const e = w.get(id);
@@ -177,7 +212,7 @@ function drawLabels() {
 
 function labelFor(e) {
   const ring = S.world.ringOf(e);
-  const bits = [e.name || e.type];
+  const bits = [e.name || (e.use ? `${e.use}` : e.type)];
   if (ring) {
     const ob = G.orientedBounds(ring);
     bits.push(`${ob.width.toFixed(1)}×${ob.depth.toFixed(1)} m`);
@@ -363,7 +398,7 @@ function saySomething(text) {
   if (!text.trim()) return;
   const ctx = context();
   const intent = interpret(text, ctx);
-  intent.author = S.author || 'unsigned';
+  intent.author = S.actingAs || S.author || 'unsigned';
   S.utterances.push({ text, resolved: intent.reference, tick: S.world.place.tick });
 
   if (intent.operation === 'ASK') {
@@ -405,7 +440,8 @@ $('sayInput').addEventListener('keydown', (ev) => {
   if (ev.key === 'Enter') {
     const v = ev.target.value;
     ev.target.value = '';
-    saySomething(v);
+    if (S.assistant && hasKey()) runAssistant(v);
+    else saySomething(v);
   }
 });
 
@@ -423,6 +459,154 @@ $('micBtn').addEventListener('click', () => {
   recog.start();
   $('micBtn').classList.add('on');
 });
+
+// --------------------------------------------------------------- assistant --
+/**
+ * The assistant works the interface: it looks, points, circles, selects and then
+ * says an ordinary sentence. Each operation runs through exactly the path a
+ * human tap runs through, so its proposals still meet the certificate and still
+ * wait for you to accept them.
+ */
+async function runAssistant(request) {
+  if (!hasKey()) { openAIPanel(); return; }
+  toast('Looking…');
+  let result;
+  try {
+    result = await proposeOperations(S.world, request, {
+      camera: { target: S.cam.target, dist: S.cam.dist },
+      selection: [...S.selection],
+      pointer: S.pointer,
+    });
+  } catch (err) {
+    toast(`The assistant could not answer: ${String(err.message).slice(0, 90)}`);
+    return;
+  }
+
+  const { reasoning, operations, refused } = result;
+  if (refused.length) console.warn('assistant operations refused:', refused);
+  if (!operations.length) {
+    toast(reasoning || 'The assistant found nothing here it could act on.');
+    return;
+  }
+
+  S.actingAs = `${S.author || 'you'} + assistant`;
+  const done = [];
+  for (const op of operations) {
+    switch (op.op) {
+      case 'look':
+        S.cam.target = [op.at[0], op.at[1], S.world.place.groundAt(op.at[0], op.at[1])];
+        if (op.distance) S.cam.dist = Math.max(20, Math.min(2000, op.distance));
+        updateFidelity();
+        done.push('looked');
+        break;
+      case 'point':
+        S.pointer = op.at;
+        done.push(`pointed at ${op.at.map(Math.round).join(', ')}`);
+        break;
+      case 'select':
+        S.selection = new Set(op.ids);
+        done.push(`selected ${op.ids.map((id) => S.world.get(id)?.name || id).join(', ')}`);
+        break;
+      case 'circle':
+        S.stroke = op.points; S.strokeClosed = true;
+        S.pointer = G.centroid(op.points);
+        done.push(`circled ${G.area(op.points).toFixed(0)} m²`);
+        break;
+      case 'line':
+        S.stroke = op.points; S.strokeClosed = false;
+        done.push(`traced ${G.perimeter(op.points, false).toFixed(0)} m`);
+        break;
+      case 'note':
+        S.pointer = op.at;
+        saySomething(op.text);
+        done.push(`noted “${op.text.slice(0, 40)}”`);
+        break;
+      case 'say':
+        saySomething(op.text);
+        done.push(`said “${op.text.slice(0, 50)}”`);
+        break;
+    }
+    S.dirty = true;
+  }
+  S.actingAs = null;
+  showTools();
+  toast(`${reasoning ? reasoning + ' — ' : ''}${done.join('; ')}`);
+}
+
+/** Where the key lives, and what that means. Said plainly rather than buried. */
+function openAIPanel() {
+  document.querySelector('.aiPanel')?.remove();
+  const cfg = getConfig();
+  const panel = document.createElement('div');
+  panel.className = 'menu aiPanel';
+  panel.style.right = '12px';
+  panel.style.bottom = `calc(74px + var(--safe))`;
+  panel.style.width = 'min(400px, calc(100vw - 24px))';
+
+  const label = document.createElement('div');
+  label.className = 'menuLabel';
+  label.textContent = 'Let an assistant work the interface';
+
+  const note = document.createElement('div');
+  note.className = 'importStatus';
+  note.textContent = 'The key is kept in this browser only and is sent straight to the provider. Anyone with this device can read it — do not put a shared key into a public deployment; proxy it instead.';
+
+  const key = document.createElement('input');
+  key.className = 'nameInput'; key.type = 'password'; key.placeholder = 'sk-…';
+  key.value = cfg.key || ''; key.setAttribute('aria-label', 'API key');
+
+  const model = document.createElement('input');
+  model.className = 'nameInput'; model.placeholder = 'model id, e.g. gpt-4o-mini';
+  model.value = cfg.model || 'gpt-4o-mini'; model.setAttribute('aria-label', 'Model');
+
+  const base = document.createElement('input');
+  base.className = 'nameInput'; base.placeholder = 'https://api.openai.com/v1';
+  base.value = cfg.baseURL || 'https://api.openai.com/v1'; base.setAttribute('aria-label', 'Base URL');
+
+  const status = document.createElement('div');
+  status.className = 'importStatus';
+
+  const row = document.createElement('div');
+  row.className = 'row';
+  row.style.padding = '0 6px 6px';
+
+  const save = document.createElement('button');
+  save.className = 'tool'; save.textContent = 'Save';
+  save.onclick = () => {
+    setConfig({
+      key: key.value.trim(), model: model.value.trim(), baseURL: base.value.trim(),
+      provider: /anthropic/.test(base.value) || /^claude/.test(model.value) ? 'anthropic' : 'openai',
+    });
+    status.textContent = 'Saved in this browser.';
+    $('aiBtn').classList.toggle('on', hasKey());
+  };
+
+  const which = document.createElement('button');
+  which.className = 'tool'; which.textContent = 'Which models?';
+  which.onclick = async () => {
+    setConfig({ key: key.value.trim(), baseURL: base.value.trim(), model: model.value.trim() });
+    status.textContent = 'asking the endpoint…';
+    try {
+      const ids = await listModels();
+      status.textContent = `${ids.length} available — e.g. ${ids.slice(0, 6).join(', ')}`;
+    } catch (err) { status.textContent = String(err.message).slice(0, 140); }
+  };
+
+  row.append(save, which);
+  panel.append(label, note, key, model, base, row, status);
+  document.body.append(panel);
+  key.focus();
+  setTimeout(() => document.addEventListener('pointerdown', function off(e) {
+    if (!panel.contains(e.target)) { panel.remove(); document.removeEventListener('pointerdown', off); }
+  }), 0);
+}
+
+$('aiBtn').onclick = (ev) => {
+  if (ev.shiftKey || !hasKey()) return openAIPanel();
+  S.assistant = !S.assistant;
+  $('aiBtn').classList.toggle('on', S.assistant);
+  toast(S.assistant ? 'The assistant will work the interface for you. Say what you want.' : 'Back to your own hands.');
+};
 
 // ---------------------------------------------------------------- proposal --
 function showProposal(p) {
@@ -884,6 +1068,7 @@ addEventListener('keydown', (ev) => {
   if (k === 'z' && (ev.metaKey || ev.ctrlKey)) { ev.preventDefault(); ev.shiftKey ? $('redoBtn').click() : $('undoBtn').click(); }
   else if (k === 'd') setMode(S.mode === 'draw' ? 'select' : 'draw');
   else if (k === 'b') showBranches();
+  else if (k === 'l') { S.labels = S.labels === false; toast(S.labels === false ? 'Labels off.' : 'Labels on.'); }
   else if (k === '/') { ev.preventDefault(); $('sayInput').focus(); }
   else if (k === 'escape') { S.selection.clear(); S.stroke = null; hide('tools'); hide('proposal'); S.plan = null; S.dirty = true; }
   else if (k === 'arrowleft') { S.cam.yaw -= 0.12; }
@@ -933,7 +1118,7 @@ addEventListener('resize', () => { S.dirty = true; });
 
 // expose for the browser-side test harness (§29: the builder does not grade itself)
 window.CREO = {
-  S, saySomething, context,
+  S, saySomething, context, runAssistant,
   world: () => S.world,
   interpret: (t) => interpret(t, context()),
   plan: (t) => { const c = context(); return plan(S.world, interpret(t, c), c); },

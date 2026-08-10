@@ -11,7 +11,7 @@
 // resident saying a lane has not been passable for years still outranks nothing,
 // and still coexists with it.
 //
-// Data © OpenStreetMap contributors, ODbL. Elevation from opentopodata.org.
+// Data © OpenStreetMap contributors, ODbL. Elevation from AWS terrarium tiles.
 
 import * as G from '../core/geom.js';
 import { Place, Heightfield, makeEntity } from '../core/place.js';
@@ -42,8 +42,14 @@ export function overpassQuery(bbox) {
   way["natural"~"water|wood|scrub|wetland"](${b});
   way["landuse"](${b});
   way["barrier"~"wall|fence|retaining_wall"](${b});
+  way["railway"](${b});
+  way["leisure"](${b});
   node["natural"="tree"](${b});
   node["amenity"](${b});
+  node["shop"](${b});
+  node["tourism"](${b});
+  node["highway"="bus_stop"](${b});
+  node["place"](${b});
 );
 out geom tags;`;
 }
@@ -126,20 +132,27 @@ export function osmToPlace(osm, { key, name, bbox, terrain = null, fetchedAt = n
 
   // Terrain first: everything else sits on it.
   const bounds = localBounds(P, bbox);
+  // A small margin so a building on the edge is not sliced off, but not so much
+  // that the place sprawls past the ground beneath it.
+  const pad = 0.06 * Math.max(bounds[2] - bounds[0], bounds[3] - bounds[1]);
+  const window_ = [bounds[0] - pad, bounds[1] - pad, bounds[2] + pad, bounds[3] + pad];
   place.terrain = terrain ? terrain.heightfield : new Heightfield(bounds, 10);
 
   const world = new World(place);
   const stats = { buildings: 0, roads: 0, paths: 0, water: 0, surfaces: 0, trees: 0, walls: 0, skipped: 0 };
 
   const add = (spec, el) => {
+    // Pull the id out first: spreading a spec whose id is undefined used to
+    // erase the OSM id, and every entity then landed under the same key.
+    const { id: specId, ...rest } = spec;
     const e = makeEntity({
-      id: `osm_${el.type[0]}${el.id}`,
+      id: specId || `osm_${el.type[0]}${el.id}`,
       source: 'OpenStreetMap',
       epistemic: 'IMPORTED',
       author: 'OpenStreetMap contributors',
       evidence: [{ kind: 'osm', ref: `${el.type}/${el.id}`, tags: el.tags || {}, fetchedAt }],
       props: { osm: { type: el.type, id: el.id, tags: el.tags || {} } },
-      ...spec,
+      ...rest,
     });
     place.put(e, 'AS_IS');
     return e;
@@ -149,6 +162,24 @@ export function osmToPlace(osm, { key, name, bbox, terrain = null, fetchedAt = n
     const tags = el.tags || {};
 
     if (el.type === 'node') {
+      // Everything OSM names at a point: shops, stops, clinics, kiosks, wells.
+      // These were being fetched and discarded, which is why the world felt
+      // emptier than the place it came from.
+      const poiKind = tags.amenity || tags.shop || tags.tourism || (tags.highway === 'bus_stop' ? 'bus stop' : null) || tags.place;
+      if (poiKind && tags.natural !== 'tree') {
+        const [x, y] = toLocal(el);
+        if (!inWindow([x, y], window_)) { stats.skipped++; continue; }
+        const z = place.groundAt(x, y);
+        add({
+          type: 'marker', subtype: String(poiKind),
+          name: tags.name || String(poiKind).replace(/_/g, ' '),
+          footprint: G.circleRing(x, y, 1.1, 8), zBase: z, zTop: z + 2.2,
+          collision: 'none', use: String(poiKind).replace(/_/g, ' '),
+          props: { poi: true, osm: { type: el.type, id: el.id, tags } },
+        }, el);
+        stats.markers = (stats.markers || 0) + 1;
+        continue;
+      }
       if (tags.natural === 'tree') {
         const [x, y] = toLocal(el);
         const z = place.groundAt(x, y);
@@ -164,51 +195,95 @@ export function osmToPlace(osm, { key, name, bbox, terrain = null, fetchedAt = n
 
     const geom = el.geometry;
     if (!geom || geom.length < 2) { stats.skipped++; continue; }
-    const line = geom.map(toLocal);
+    const fullLine = geom.map(toLocal);
+    const line = fullLine;
     const closed = geom.length > 2 && Math.abs(geom[0].lat - geom.at(-1).lat) < 1e-9 && Math.abs(geom[0].lon - geom.at(-1).lon) < 1e-9;
     const ring = closed ? dedupeRing(line) : null;
 
     if (tags.building || tags['building:part']) {
       if (!ring || ring.length < 3 || G.area(ring) < 2) { stats.skipped++; continue; }
-      const c = G.centroid(ring);
+      const c0 = G.centroid(ring);
+      if (!inWindow(c0, window_)) { stats.skipped++; continue; }
+      const trimmed = clipRing(ring, window_);
+      if (!trimmed || G.area(trimmed) < 2) { stats.skipped++; continue; }
+      const c = G.centroid(trimmed);
       const z = place.groundAt(c[0], c[1]);
       const { height, basis } = buildingHeight(tags);
+      const roofH = parseFloat(tags['roof:height']);
+      const roof = {
+        shape: tags['roof:shape'] || null,
+        // A roof's height is part of the building's, not on top of it.
+        height: Number.isFinite(roofH) ? Math.min(roofH, height * 0.6) : null,
+        colour: tags['roof:colour'] || null,
+        material: tags['roof:material'] || null,
+      };
+      const address = [tags['addr:housenumber'], tags['addr:street']].filter(Boolean).join(' ') || null;
       add({
-        type: 'structure', name: tags.name || tags['addr:housenumber'] || 'Building',
-        footprint: ring, zBase: z, zTop: z + height,
+        type: 'structure',
+        name: tags.name || address || 'Building',
+        footprint: trimmed, zBase: z, zTop: z + height,
         use: tags.amenity || tags.shop || tags.office || tags.building,
-        material: tags['building:material'] || null,
+        material: tags['building:material'] || tags['building'] || null,
         collision: 'solid', sim: { permeability: 0, roughness: 0.02 },
-        props: { heightBasis: basis, osm: { type: el.type, id: el.id, tags } },
+        props: {
+          heightBasis: basis, roof, address,
+          colour: tags['building:colour'] || null,
+          levels: parseFloat(tags['building:levels']) || null,
+          osm: { type: el.type, id: el.id, tags },
+        },
       }, el);
       stats.buildings++;
+      continue;
+    }
+
+    if (tags.railway && !tags.highway) {
+      const pieces = clipToBox(fullLine, window_);
+      if (!pieces.length) { stats.skipped++; continue; }
+      const line = pieces[0];
+      const z = place.groundAt(line[0][0], line[0][1]);
+      add({
+        type: 'rail', name: tags.name || tags.railway.replace(/_/g, ' '),
+        path: line, width: tags.railway === 'tram' ? 3 : 4.5,
+        zBase: z, zTop: z + 0.3, network: 'rail', collision: 'none',
+      }, el);
+      stats.rail = (stats.rail || 0) + 1;
       continue;
     }
 
     if (tags.highway) {
       const isPath = PATH_KINDS.has(tags.highway);
       const width = parseFloat(tags.width) || (parseFloat(tags.lanes) ? parseFloat(tags.lanes) * 3.2 : null) || ROAD_WIDTH[tags.highway] || 5;
-      const z = place.groundAt(line[0][0], line[0][1]);
+      const pieces = clipToBox(fullLine, window_);
+      if (!pieces.length) { stats.skipped++; continue; }
+      for (const [pi, piece] of pieces.entries()) {
+      const z = place.groundAt(piece[0][0], piece[0][1]);
       add({
-        type: isPath ? 'path' : 'road', name: tags.name || tags.highway.replace(/_/g, ' '),
-        path: line, width,
+        // An unnamed lane is unnamed. Calling it "residential" would put a
+        // street name in the world that nobody uses.
+        id: pieces.length > 1 ? `osm_${el.type[0]}${el.id}_${pi}` : undefined,
+        type: isPath ? 'path' : 'road', name: tags.name || null,
+        path: piece, width,
         zBase: z, zTop: z + 0.05,
         network: isPath ? 'paths' : 'streets',
-        use: tags.name ? undefined : tags.highway,
+        use: tags.highway.replace(/_/g, ' '),
         collision: 'none',
         sim: { permeability: tags.surface === 'unpaved' || tags.surface === 'ground' ? 0.4 : 0.15, roughness: 0.02 },
         props: { surface: tags.surface || null, osm: { type: el.type, id: el.id, tags } },
       }, el);
       isPath ? stats.paths++ : stats.roads++;
+      }
       continue;
     }
 
     if (tags.waterway) {
       const width = parseFloat(tags.width) || (tags.waterway === 'river' ? 12 : tags.waterway === 'stream' ? 3 : 1.5);
-      const z = place.groundAt(line[0][0], line[0][1]);
+      const pieces = clipToBox(fullLine, window_);
+      if (!pieces.length) { stats.skipped++; continue; }
+      const line2 = pieces[0];
+      const z = place.groundAt(line2[0][0], line2[0][1]);
       add({
         type: tags.waterway === 'ditch' || tags.waterway === 'drain' ? 'drain' : 'stream',
-        name: tags.name || tags.waterway, path: line, width,
+        name: tags.name || null, use: tags.waterway, path: line2, width,
         zBase: z - (tags.waterway === 'river' ? 2 : 0.8), zTop: z,
         network: 'drainage', collision: 'none',
         sim: { capacity: width * 0.8, permeability: 0.1 },
@@ -218,20 +293,22 @@ export function osmToPlace(osm, { key, name, bbox, terrain = null, fetchedAt = n
     }
 
     if (ring && ring.length >= 3 && G.area(ring) > 4) {
-      const c = G.centroid(ring);
+      const trimmed = clipRing(ring, window_);
+      if (!trimmed || G.area(trimmed) < 4) { stats.skipped++; continue; }
+      const c = G.centroid(trimmed);
       const z = place.groundAt(c[0], c[1]);
       if (tags.natural === 'water') {
-        add({ type: 'water', name: tags.name || 'Water', footprint: ring, zBase: z - 1, zTop: z, collision: 'none', sim: { capacity: 999 } }, el);
+        add({ type: 'water', name: tags.name || 'Water', footprint: trimmed, zBase: z - 1, zTop: z, collision: 'none', sim: { capacity: 999 } }, el);
         stats.water++;
       } else if (tags.barrier) {
-        add({ type: 'wall', name: tags.barrier, footprint: ring, zBase: z, zTop: z + 2, collision: 'solid' }, el);
+        add({ type: 'wall', name: tags.barrier, footprint: trimmed, zBase: z, zTop: z + 2, collision: 'solid' }, el);
         stats.walls++;
       } else {
         const permeable = /grass|wood|forest|meadow|scrub|farmland|park|recreation|cemetery|allotments|village_green/.test(`${tags.landuse} ${tags.natural} ${tags.leisure}`);
         add({
           type: 'surface', subtype: tags.landuse || tags.natural || 'ground',
           name: tags.name || tags.landuse || tags.natural || 'Ground',
-          footprint: ring, zBase: z - 0.02, zTop: z, collision: 'none',
+          footprint: trimmed, zBase: z - 0.02, zTop: z, collision: 'none',
           sim: { permeability: permeable ? 0.7 : 0.2, roughness: permeable ? 0.3 : 0.05 },
         }, el);
         stats.surfaces++;
@@ -239,9 +316,11 @@ export function osmToPlace(osm, { key, name, bbox, terrain = null, fetchedAt = n
       continue;
     }
 
-    if (tags.barrier && line.length >= 2) {
-      const z = place.groundAt(line[0][0], line[0][1]);
-      add({ type: 'wall', name: tags.barrier, path: line, width: 0.3, zBase: z, zTop: z + 2, collision: 'solid' }, el);
+    if (tags.barrier && fullLine.length >= 2) {
+      const pieces = clipToBox(fullLine, window_);
+      if (!pieces.length) { stats.skipped++; continue; }
+      const z = place.groundAt(pieces[0][0][0], pieces[0][0][1]);
+      add({ type: 'wall', name: tags.barrier, path: pieces[0], width: 0.3, zBase: z, zTop: z + 2, collision: 'solid' }, el);
       stats.walls++;
       continue;
     }
@@ -260,6 +339,87 @@ export function osmToPlace(osm, { key, name, bbox, terrain = null, fetchedAt = n
   world.dirty = true;
   world.reindex(true);
   return { world, stats };
+}
+
+/**
+ * Overpass returns whole ways that merely touch the box, so a road crossing a
+ * 1 km window comes back 4 km long. Left alone, the place's bounds no longer
+ * match the extent it claims and geometry sits beyond its own terrain. Lines are
+ * therefore trimmed to the window, splitting into pieces where they leave and
+ * re-enter.
+ */
+const inWindow = (p, box) => p[0] >= box[0] && p[0] <= box[2] && p[1] >= box[1] && p[1] <= box[3];
+
+/**
+ * Sutherland–Hodgman: trim a closed ring to the window rather than dropping it.
+ * A landuse polygon that runs a kilometre past the edge is still real; it just
+ * is not all of it in this place.
+ */
+function clipRing(ring, box) {
+  const edges = [
+    { inside: (p) => p[0] >= box[0], cut: (a, b) => cutX(a, b, box[0]) },
+    { inside: (p) => p[0] <= box[2], cut: (a, b) => cutX(a, b, box[2]) },
+    { inside: (p) => p[1] >= box[1], cut: (a, b) => cutY(a, b, box[1]) },
+    { inside: (p) => p[1] <= box[3], cut: (a, b) => cutY(a, b, box[3]) },
+  ];
+  let out = ring;
+  for (const e of edges) {
+    const input = out;
+    out = [];
+    for (let i = 0; i < input.length; i++) {
+      const cur = input[i], prev = input[(i - 1 + input.length) % input.length];
+      const cin = e.inside(cur), pin = e.inside(prev);
+      if (cin) {
+        if (!pin) out.push(e.cut(prev, cur));
+        out.push(cur);
+      } else if (pin) out.push(e.cut(prev, cur));
+    }
+    if (!out.length) return null;
+  }
+  return out.length >= 3 ? out : null;
+}
+const cutX = (a, b, x) => [x, a[1] + ((b[1] - a[1]) * (x - a[0])) / (b[0] - a[0] || 1e-9)];
+const cutY = (a, b, y) => [a[0] + ((b[0] - a[0]) * (y - a[1])) / (b[1] - a[1] || 1e-9), y];
+
+function clipToBox(line, box) {
+  // Liang–Barsky per segment. A straight road whose only two vertices lie
+  // outside the window still crosses it, and dropping it left the place with
+  // three roads instead of eighty-seven.
+  const runs = [];
+  let cur = [];
+  const near = (a, b) => Math.abs(a[0] - b[0]) < 1e-6 && Math.abs(a[1] - b[1]) < 1e-6;
+  const push = (p) => { if (!cur.length || !near(cur[cur.length - 1], p)) cur.push(p); };
+
+  for (let i = 0; i < line.length - 1; i++) {
+    const clipped = clipSegment(line[i], line[i + 1], box);
+    if (!clipped) {                       // this segment misses the window entirely
+      if (cur.length >= 2) runs.push(cur);
+      cur = [];
+      continue;
+    }
+    const [a, b] = clipped;
+    if (cur.length && !near(cur[cur.length - 1], a)) { if (cur.length >= 2) runs.push(cur); cur = []; }
+    push(a); push(b);
+  }
+  if (cur.length >= 2) runs.push(cur);
+  return runs;
+}
+
+/** The portion of one segment inside the box, or null. */
+function clipSegment(p0, p1, box) {
+  let t0 = 0, t1 = 1;
+  const dx = p1[0] - p0[0], dy = p1[1] - p0[1];
+  const tests = [[-dx, p0[0] - box[0]], [dx, box[2] - p0[0]], [-dy, p0[1] - box[1]], [dy, box[3] - p0[1]]];
+  for (const [p, q] of tests) {
+    if (Math.abs(p) < 1e-12) { if (q < 0) return null; continue; }
+    const r = q / p;
+    if (p < 0) { if (r > t1) return null; if (r > t0) t0 = r; }
+    else { if (r < t0) return null; if (r < t1) t1 = r; }
+  }
+  return [
+    [p0[0] + dx * t0, p0[1] + dy * t0],
+    [p0[0] + dx * t1, p0[1] + dy * t1],
+  ];
 }
 
 function dedupeRing(line) {

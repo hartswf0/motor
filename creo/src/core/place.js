@@ -33,7 +33,7 @@ export const DERIVED_RELATIONS = new Set([
 export function makeEntity(props) {
   return {
     id: props.id,
-    type: props.type,                       // structure | room | road | path | drain | water | tree | surface | region | parcel | observation | marker | opening | wall | furniture …
+    type: props.type,                       // structure | room | road | path | rail | drain | water | tree | surface | region | parcel | observation | marker | opening | wall | furniture …
     name: props.name || null,
     footprint: props.footprint || null,     // [[x,y], …] closed ring, metres
     path: props.path || null,               // [[x,y], …] open polyline, metres
@@ -164,6 +164,11 @@ export class Place {
 
   /** Write an entity into a branch overlay (AS_IS writes to the base map). */
   put(entity, branchId = this.activeBranch) {
+    // An entity with no id would silently overwrite the last one that also had
+    // none. Losing data quietly is worse than failing loudly.
+    if (!entity || typeof entity.id !== 'string' || !entity.id) {
+      throw new Error(`cannot store an entity without an id (type ${entity?.type})`);
+    }
     if (branchId === 'AS_IS') this.entities.set(entity.id, entity);
     else this.overlays.get(branchId).set(entity.id, entity);
     return entity;

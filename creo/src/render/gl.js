@@ -157,7 +157,16 @@ export class Renderer {
         // Standing inside a building, the roof is the one thing you do not want
         // to look at. What matters changes with where you are (§17).
         const cutaway = cutawayAt && e.type === 'structure' && G.pointInRing(cutawayAt, ring);
-        S.prism(ring, e.zBase, e.zTop, col, roofColorFor(e), 1, !cutaway);
+        const shape = e.props?.roof?.shape;
+        const wantsRoof = !cutaway && e.type === 'structure' && detail <= 1 && shape && shape !== 'flat';
+        if (wantsRoof) {
+          const rh = roofHeightFor(e, ring);
+          const eaves = Math.max(e.zBase + 0.4, e.zTop - rh);
+          S.prism(ring, e.zBase, eaves, col, col, 1, false);
+          S.roof(ring, eaves, eaves + rh, shape, roofColorFor(e));
+        } else {
+          S.prism(ring, e.zBase, e.zTop, col, roofColorFor(e), 1, !cutaway);
+        }
         if (cutaway) L.ring(ring, e.zTop, [1, 1, 1], 0.28);
       }
 
@@ -329,8 +338,59 @@ function visibleAt(e, detail) {
 const isFlat = (e) => ['path', 'road', 'surface', 'parcel', 'observation', 'drain', 'water', 'stream'].includes(e.type)
   || (e.zTop - e.zBase) < 0.12;
 
+const CSS_COLOURS = {
+  white: [.92, .91, .88], grey: [.55, .55, .54], gray: [.55, .55, .54], black: [.16, .16, .17],
+  red: [.55, .24, .20], brown: [.42, .30, .22], beige: [.78, .71, .58], cream: [.86, .82, .70],
+  yellow: [.80, .70, .36], orange: [.72, .46, .24], green: [.34, .45, .30], blue: [.32, .42, .55],
+  pink: [.78, .62, .60], sandstone: [.74, .66, .50], terracotta: [.62, .35, .25],
+};
+const MATERIAL_COLOURS = {
+  brick: [.52, .34, .29], concrete: [.62, .61, .59], glass: [.42, .55, .60],
+  stone: [.63, .60, .55], wood: [.48, .36, .25], timber: [.48, .36, .25],
+  'iron sheet': [.55, .42, .36], metal: [.55, .56, .58], plaster: [.78, .74, .66],
+  cement_block: [.66, .64, .60], mud: [.48, .38, .28], thatch: [.60, .50, .32],
+  tile: [.55, .32, .26], roof_tiles: [.55, .32, .26], slate: [.32, .34, .38],
+  copper: [.35, .55, .48], zinc: [.60, .62, .63], tin: [.58, .56, .54],
+};
+
+/** OSM writes colours as names or hex; both are honoured before any guess. */
+function parseColour(v) {
+  if (!v) return null;
+  const s = String(v).trim().toLowerCase();
+  if (CSS_COLOURS[s]) return CSS_COLOURS[s];
+  const hex = /^#?([0-9a-f]{6})$/.exec(s);
+  if (hex) {
+    const n = parseInt(hex[1], 16);
+    return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+  }
+  return null;
+}
+
+/** A city is not one colour. Vary deterministically so a place looks the same twice. */
+function vary(base, seed, amount = 0.09) {
+  let h = 2166136261;
+  for (let i = 0; i < seed.length; i++) { h ^= seed.charCodeAt(i); h = Math.imul(h, 16777619); }
+  const r = ((h >>> 0) % 1000) / 1000 - 0.5;
+  const g = (((h >>> 7) >>> 0) % 1000) / 1000 - 0.5;
+  const b = (((h >>> 13) >>> 0) % 1000) / 1000 - 0.5;
+  return [
+    Math.max(0.05, Math.min(1, base[0] + r * amount)),
+    Math.max(0.05, Math.min(1, base[1] + g * amount)),
+    Math.max(0.05, Math.min(1, base[2] + b * amount)),
+  ];
+}
+
 function colorFor(e) {
   if (e.epistemic === 'DISPUTED') return PALETTE.disputed;
+  if (e.type === 'structure') {
+    const stated = parseColour(e.props?.colour);
+    if (stated) return stated;
+    const mat = MATERIAL_COLOURS[String(e.material || '').toLowerCase()];
+    if (mat) return vary(mat, e.id, 0.07);
+    return vary(PALETTE.structure, e.id, 0.13);
+  }
+  if (e.type === 'marker') return [0.85, 0.72, 0.42];
+  if (e.type === 'rail') return [0.36, 0.35, 0.34];
   if (e.type === 'structure' && e.material === 'iron sheet') return PALETTE.iron;
   if (e.subtype === 'garden') return [0.33, 0.48, 0.28];
   if (e.subtype === 'swale') return [0.30, 0.45, 0.40];
@@ -339,8 +399,21 @@ function colorFor(e) {
   return PALETTE[TYPE_COLOR[e.type]] || [0.5, 0.5, 0.5];
 }
 function roofColorFor(e) {
-  if (e.type === 'structure') return e.material === 'iron sheet' ? [0.46, 0.36, 0.32] : PALETTE.roof;
-  return colorFor(e);
+  if (e.type !== 'structure') return colorFor(e);
+  const stated = parseColour(e.props?.roof?.colour);
+  if (stated) return stated;
+  const mat = MATERIAL_COLOURS[String(e.props?.roof?.material || '').toLowerCase()];
+  if (mat) return vary(mat, `${e.id}r`, 0.06);
+  const wall = colorFor(e);
+  return [wall[0] * 0.78, wall[1] * 0.76, wall[2] * 0.74];   // roofs read darker than walls
+}
+
+/** Roof height when OSM does not say: enough to read as a roof, never dominant. */
+function roofHeightFor(e, ring) {
+  const stated = e.props?.roof?.height;
+  if (Number.isFinite(stated) && stated > 0) return stated;
+  const ob = G.orientedBounds(ring);
+  return Math.max(1.2, Math.min(4.5, Math.min(ob.width, ob.depth) * 0.28));
 }
 
 function terrainColor(h, t, water, x, y) {
@@ -391,6 +464,68 @@ class Builder {
     }
     if (withTop) this.polygon(ccw, zTop, topCol, alpha);
   }
+  /**
+   * A roof with a shape, from the tags OSM actually carries. Gabled and hipped
+   * roofs are built against the footprint's own long axis, so a building at
+   * 31° to north gets a ridge at 31°, not one aligned to the world.
+   */
+  roof(ring, zEaves, zApex, shape, col) {
+    const ccw = G.ensureCCW(ring);
+    const ob = G.orientedBounds(ccw);
+    const dir = [Math.cos(ob.angle), Math.sin(ob.angle)];
+    const long = ob.width >= ob.depth;
+    const axis = long ? dir : G.perp(dir);
+    const halfLen = (long ? ob.width : ob.depth) / 2;
+
+    if (shape === 'pyramidal' || shape === 'dome' || shape === 'onion' || shape === 'conical') {
+      const apex = [ob.center[0], ob.center[1], zApex];
+      for (let i = 0, n = ccw.length; i < n; i++) {
+        const a = ccw[i], b = ccw[(i + 1) % n];
+        this.tri([a[0], a[1], zEaves], [b[0], b[1], zEaves], apex, normalOf([a[0], a[1], zEaves], [b[0], b[1], zEaves], apex), col, 1);
+      }
+      return;
+    }
+
+    if (shape === 'skillion' || shape === 'lean_to' || shape === 'shed') {
+      // one edge lifted: height varies with distance along the short axis
+      const across = long ? G.perp(dir) : dir;
+      const proj = ccw.map((p) => G.dot(G.sub(p, ob.center), across));
+      const lo = Math.min(...proj), hi = Math.max(...proj);
+      const zOf = (p) => zEaves + (zApex - zEaves) * ((G.dot(G.sub(p, ob.center), across) - lo) / Math.max(1e-6, hi - lo));
+      const idx = G.triangulate(ccw);
+      for (let i = 0; i < idx.length; i += 3) {
+        const a = ccw[idx[i]], b = ccw[idx[i + 1]], c = ccw[idx[i + 2]];
+        const A = [a[0], a[1], zOf(a)], B = [b[0], b[1], zOf(b)], C = [c[0], c[1], zOf(c)];
+        this.tri(A, B, C, normalOf(A, B, C), col, 1);
+      }
+      // close the raised gable end
+      for (let i = 0, n = ccw.length; i < n; i++) {
+        const a = ccw[i], b = ccw[(i + 1) % n];
+        this.quad([a[0], a[1], zEaves], [b[0], b[1], zEaves], [b[0], b[1], zOf(b)], [a[0], a[1], zOf(a)], col, 1);
+      }
+      return;
+    }
+
+    // gabled (and hipped, with the ridge pulled in from the ends)
+    const inset = shape === 'hipped' || shape === 'half-hipped' ? Math.min(halfLen * 0.55, (long ? ob.depth : ob.width) / 2) : 0;
+    const r0 = [ob.center[0] - axis[0] * (halfLen - inset), ob.center[1] - axis[1] * (halfLen - inset), zApex];
+    const r1 = [ob.center[0] + axis[0] * (halfLen - inset), ob.center[1] + axis[1] * (halfLen - inset), zApex];
+    const onRidge = (p) => {
+      const t = Math.max(0, Math.min(1, (G.dot(G.sub(p, [r0[0], r0[1]]), axis)) / Math.max(1e-6, 2 * (halfLen - inset))));
+      return [r0[0] + (r1[0] - r0[0]) * t, r0[1] + (r1[1] - r0[1]) * t, zApex];
+    };
+    for (let i = 0, n = ccw.length; i < n; i++) {
+      const a = ccw[i], b = ccw[(i + 1) % n];
+      const A = [a[0], a[1], zEaves], B = [b[0], b[1], zEaves];
+      const ra = onRidge(a), rb = onRidge(b);
+      if (G.dist([ra[0], ra[1]], [rb[0], rb[1]]) < 0.05) {
+        this.tri(A, B, ra, normalOf(A, B, ra), col, 1);
+      } else {
+        this.quad(A, B, rb, ra, col, 1);
+      }
+    }
+  }
+
   cone(c, r, zBase, zTop, col, seg) {
     const apex = [c[0], c[1], zTop];
     for (let i = 0; i < seg; i++) {
