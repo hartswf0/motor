@@ -17,6 +17,13 @@ import * as G from '../core/geom.js';
 import { Place, Heightfield, makeEntity } from '../core/place.js';
 import { World } from '../core/world.js';
 
+/** The bounding box in local metres — the frame terrain and entities share. */
+export function localBounds(projection, bbox) {
+  const a = projection.toLocal(bbox[0], bbox[1]);
+  const b = projection.toLocal(bbox[2], bbox[3]);
+  return [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[0], b[0]), Math.max(a[1], b[1])];
+}
+
 const MIRRORS = [
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
@@ -103,27 +110,23 @@ function buildingHeight(tags) {
 /**
  * @returns {World} a real place, with a real projection and real provenance.
  */
-export function osmToPlace(osm, { key, name, bbox, elevation = null, fetchedAt = null, mirror = null }) {
+export function osmToPlace(osm, { key, name, bbox, terrain = null, fetchedAt = null, mirror = null }) {
   const anchor = [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2];
   const place = new Place({ id: key, name, anchor, seed: 1 });
   place.meta = {
     source: 'OpenStreetMap',
     licence: 'ODbL — © OpenStreetMap contributors',
     bbox, fetchedAt, mirror,
-    elevation: elevation ? elevation.attribution : 'none — treated as flat',
+    elevation: terrain ? terrain.attribution : 'none — treated as flat',
+    relief: terrain ? terrain.relief : 0,
+    datum: terrain ? terrain.datum : null,
   };
   const P = place.projection;
   const toLocal = (n) => P.toLocal(n.lat, n.lon);
 
   // Terrain first: everything else sits on it.
-  const bb = [
-    ...P.toLocal(bbox[0], bbox[1]),
-    ...P.toLocal(bbox[2], bbox[3]),
-  ];
-  const bounds = [Math.min(bb[0], bb[2]), Math.min(bb[1], bb[3]), Math.max(bb[0], bb[2]), Math.max(bb[1], bb[3])];
-  place.terrain = elevation
-    ? heightfieldFrom(elevation, P, bounds)
-    : new Heightfield(bounds, 10);
+  const bounds = localBounds(P, bbox);
+  place.terrain = terrain ? terrain.heightfield : new Heightfield(bounds, 10);
 
   const world = new World(place);
   const stats = { buildings: 0, roads: 0, paths: 0, water: 0, surfaces: 0, trees: 0, walls: 0, skipped: 0 };
@@ -269,27 +272,4 @@ function dedupeRing(line) {
   return out;
 }
 
-function heightfieldFrom(elevation, projection, bounds) {
-  const { points, spacing } = elevation;
-  const hf = new Heightfield(bounds, spacing);
-  // Inverse-distance interpolation from the sampled DEM points.
-  const local = points.map((p) => ({ xy: projection.toLocal(p.lat, p.lon), z: p.elevation }));
-  const base = Math.min(...local.map((p) => p.z));
-  for (let j = 0; j < hf.ny; j++) {
-    for (let i = 0; i < hf.nx; i++) {
-      const x = bounds[0] + i * hf.cell, y = bounds[1] + j * hf.cell;
-      let num = 0, den = 0;
-      for (const p of local) {
-        const d2 = (p.xy[0] - x) ** 2 + (p.xy[1] - y) ** 2;
-        if (d2 < 1e-6) { num = p.z; den = 1; break; }
-        const w = 1 / (d2 * d2);
-        num += p.z * w; den += w;
-      }
-      // Store metres above the lowest sampled point: local relief is what the
-      // water model needs, and absolute altitude would only add noise.
-      hf.data[hf.idx(i, j)] = (den ? num / den : base) - base;
-    }
-  }
-  hf.__datum = base;
-  return hf;
-}
+

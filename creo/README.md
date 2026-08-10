@@ -8,20 +8,29 @@ transformation. Not a picture of one. Not a scene generated beside the real
 world. A change to the world, which the world then argues with.
 
 ```bash
-python3 serve.py 8800                    # then open http://localhost:8800
-node tests/run.js                        # 87 tests, offline
-node import.js --preset=babadogo         # import a real place from OpenStreetMap
+python3 serve.py 8800            # then open http://localhost:8800
+node tests/run.js                # 87 tests, offline
 ```
 
-Presets: `babadogo`, `kibera`, `soho`, `venice`, `amsterdam` — or any bounding box:
+**Any location on Earth, by name — from inside the app.** Open the place menu and
+choose *Take me anywhere*. Type a street, a district, a village. Ambiguous names
+show you the matches rather than guessing which Springfield you meant. Central
+Rome takes about 25 seconds: 3 062 real buildings, 3 300 ways, 87 m of relief.
+
+Or from the command line, to bake a place into the repo:
 
 ```bash
-node import.js --bbox=52.3735,4.8790,52.3785,4.8860 --name="Jordaan" --key=jordaan
+node import.js "Kibera, Nairobi"
+node import.js "Jordaan, Amsterdam" --metres=700
+node import.js --search="springfield"      # see the matches first
+node import.js --list
 ```
 
-No API key. OpenStreetMap's Overpass API and opentopodata.org are both free and
-keyless. After an import the place is a file, and everything — including the
-tests — runs offline.
+**No API key, for any of it.** Nominatim geocodes, Overpass supplies what is
+built, and AWS's public terrarium tiles supply the ground — all three are free,
+keyless, and allow browser requests, which is why the deployed page can do this
+without a server. After an import the place is cached locally and everything,
+including the tests, runs offline.
 
 No dependencies. No build step. No network calls. No API keys.
 

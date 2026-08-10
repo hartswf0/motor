@@ -8,6 +8,7 @@
 import * as G from '../core/geom.js';
 import { buildPlace, PLACES } from '../places/index.js';
 import { listImported, loadImported, attribution } from '../places/imported.js';
+import { openImportPanel, listCached, loadCached } from './importui.js';
 import { World } from '../core/world.js';
 import { makeContext } from '../lang/deixis.js';
 import { interpret } from '../lang/interpret.js';
@@ -707,6 +708,29 @@ $('placeChip').onclick = async (ev) => {
   menu.className = 'menu';
   menu.style.left = '12px';
   menu.style.top = `${ev.currentTarget.getBoundingClientRect().bottom + 8}px`;
+  // "anywhere" comes first: it is the answer to the question the menu raises
+  const anywhere = document.createElement('button');
+  anywhere.innerHTML = `Take me anywhere…<span class="sub">search any street, district or village on Earth</span>`;
+  anywhere.onclick = () => {
+    menu.remove();
+    openImportPanel({
+      anchorEl: $('placeChip'),
+      toast,
+      onLoaded: (world, key, name) => adoptWorld(world, key, name),
+    });
+  };
+  menu.append(anywhere);
+
+  const cached = await listCached();
+  for (const p of cached) {
+    const b = document.createElement('button');
+    b.className = p.key === S.placeKey ? 'on' : '';
+    const c = p.counts || {};
+    b.innerHTML = `${p.name}<span class="sub">${c.buildings || 0} buildings · ${(c.roads || 0) + (c.paths || 0)} ways · ${p.relief || 0} m relief</span>`;
+    b.onclick = async () => { menu.remove(); adoptWorld(await loadCached(p.key), p.key, p.name); };
+    menu.append(b);
+  }
+
   const imported = await listImported();
   if (imported.length) {
     const h = document.createElement('div');
@@ -803,8 +827,27 @@ function refreshChrome() {
 
 // persistence — a place that forgets is not a place
 function save() {
+  // Imported places are megabytes and already live in IndexedDB; only the
+  // synthetic ones are small enough to mirror into localStorage.
+  if (!PLACES.some((p) => p.key === S.placeKey)) return;
   try { localStorage.setItem(`creo.save.${S.placeKey}`, S.world.save()); } catch { /* quota */ }
 }
+/** Install a World that was just imported, without going back to disk. */
+function adoptWorld(world, key, name) {
+  S.world = world;
+  S.placeKey = key;
+  S.selection.clear(); S.highlight.clear(); S.stroke = null; S.plan = null; S.overlay = null; S.utterances = [];
+  hide('proposal'); hide('answer'); hide('branches'); hide('tools');
+  $('placeName').textContent = (name || world.place.name).split(' — ')[0].split(',')[0];
+  const credit = attribution(world);
+  $('attribution').textContent = credit || '';
+  $('attribution').hidden = !credit;
+  frameWorld();
+  refreshChrome();
+  S.dirty = true;
+  localStorage.setItem('creo.place', key);
+}
+
 async function loadPlace(key) {
   S.placeKey = key;
   const saved = localStorage.getItem(`creo.save.${key}`);
@@ -812,7 +855,11 @@ async function loadPlace(key) {
   try {
     if (saved) S.world = World.load(saved);
     else if (synthetic) S.world = buildPlace(key);
-    else S.world = await loadImported(key);          // a real place, from OSM
+    else {
+      // a real place: either shipped with the repo, or pulled in by this browser
+      try { S.world = await loadImported(key); }
+      catch { S.world = await loadCached(key); }
+    }
   } catch (err) {
     console.warn('falling back to a synthetic place:', err.message);
     S.world = buildPlace(synthetic ? key : 'settlement');

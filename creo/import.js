@@ -1,94 +1,78 @@
 #!/usr/bin/env node
-// Import a real place into CREO.
+// Import any location into CREO.
 //
-//   node import.js --bbox=-1.2380,36.8760,-1.2340,36.8820 --name="Baba Dogo" --key=babadogo
-//   node import.js --preset=babadogo
+//   node import.js "Kibera, Nairobi"
+//   node import.js "Jordaan, Amsterdam" --metres=700
+//   node import.js --bbox=52.3735,4.8790,52.3785,4.8860 --name="Jordaan"
+//   node import.js --list
 //
-// Writes places/<key>.json — after which the place works entirely offline, and
-// the test suite still runs with no network. Data © OpenStreetMap contributors
-// (ODbL); elevation from opentopodata.org.
+// No API key: Nominatim, Overpass and the terrarium tiles are all public.
+// After an import the place is a file, and everything — including the test
+// suite — runs offline. Data © OpenStreetMap contributors (ODbL).
 
-import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
+import { writeFileSync, mkdirSync, existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { fetchOSM, osmToPlace } from './src/import/osm.js';
-import { fetchElevation } from './src/import/elevation.js';
+import { importPlace, slug } from './src/import/place.js';
+import { geocode } from './src/import/geocode.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const PLACES_DIR = join(here, 'places');
+const PLACES = join(here, 'places');
 
-// bbox is [south, west, north, east]
-export const PRESETS = {
-  babadogo:  { name: 'Baba Dogo, Nairobi',      bbox: [-1.2395, 36.8745, -1.2325, 36.8835] },
-  kibera:    { name: 'Kibera, Nairobi',          bbox: [-1.3155, 36.7830, -1.3085, 36.7920] },
-  soho:      { name: 'SoHo, New York',           bbox: [40.7215, -74.0045, 40.7265, -73.9975] },
-  venice:    { name: 'Cannaregio, Venice',       bbox: [45.4425, 12.3245, 45.4475, 12.3315] },
-  amsterdam: { name: 'Jordaan, Amsterdam',       bbox: [52.3735, 4.8790, 52.3785, 4.8860] },
-};
-
-const args = Object.fromEntries(process.argv.slice(2)
-  .filter((a) => a.startsWith('--'))
+const argv = process.argv.slice(2);
+const flags = Object.fromEntries(argv.filter((a) => a.startsWith('--'))
   .map((a) => { const [k, ...v] = a.slice(2).split('='); return [k, v.join('=') || true]; }));
+const query = argv.filter((a) => !a.startsWith('--')).join(' ').trim();
 
-const preset = args.preset ? PRESETS[args.preset] : null;
-if (args.preset && !preset) {
-  console.error(`unknown preset. try: ${Object.keys(PRESETS).join(', ')}`);
-  process.exit(1);
-}
-const bbox = preset ? preset.bbox : String(args.bbox || '').split(',').map(Number);
-const name = preset ? preset.name : (args.name || 'Imported place');
-const key = args.key || args.preset || 'imported';
-
-if (bbox.length !== 4 || bbox.some((n) => !Number.isFinite(n))) {
-  console.error('need --bbox=south,west,north,east  or  --preset=<name>');
-  console.error(`presets: ${Object.keys(PRESETS).join(', ')}`);
-  process.exit(1);
+if (flags.list) {
+  const idx = existsSync(join(PLACES, 'index.json')) ? JSON.parse(readFileSync(join(PLACES, 'index.json'), 'utf8')) : [];
+  if (!idx.length) console.log('no places imported yet');
+  for (const p of idx) console.log(`  ${p.key.padEnd(16)} ${p.name}  (${p.counts.buildings} buildings, ${p.counts.roads} roads, ${p.relief} m relief)`);
+  process.exit(0);
 }
 
-const [s, w, n, e] = bbox;
-const spanM = Math.round((n - s) * 111320);
-const spanE = Math.round((e - w) * 111320 * Math.cos(((s + n) / 2 * Math.PI) / 180));
-console.log(`\n${name}`);
-console.log(`  bbox ${bbox.join(', ')}  (~${spanE} × ${spanM} m)`);
+if (flags.search) {
+  for (const h of await geocode(String(flags.search))) {
+    console.log(`  ${h.short}\n    ${h.kind} · ${h.span.width}×${h.span.height} m · ${h.bbox.map((n) => n.toFixed(4)).join(',')}`);
+  }
+  process.exit(0);
+}
+
+if (!query && !flags.bbox) {
+  console.log('usage:\n  node import.js "Kibera, Nairobi"\n  node import.js --bbox=S,W,N,E --name="..."\n  node import.js --search="springfield"\n  node import.js --list');
+  process.exit(1);
+}
 
 const t0 = Date.now();
-console.log('  fetching OpenStreetMap…');
-const { json, mirror } = await fetchOSM(bbox, { log: (m) => console.log(`    ${m}`) });
-console.log(`  ${json.elements.length} OSM elements from ${new URL(mirror).host}`);
-
-let elevation = null;
-if (args.flat) {
-  console.log('  --flat: skipping elevation, terrain will be level');
-} else {
-  try {
-    elevation = await fetchElevation(bbox, { log: (m) => process.stdout.write(`\r  ${m}   `) });
-    console.log(`\r  elevation: ${elevation.points.length} samples, ${elevation.dataset}, relief ${elevation.relief} m      `);
-  } catch (err) {
-    console.log(`\r  elevation unavailable (${err.message.slice(0, 80)}) — terrain will be level`);
-  }
+let result;
+try {
+  result = await importPlace({
+    query: query || undefined,
+    bbox: flags.bbox ? String(flags.bbox).split(',').map(Number) : undefined,
+    name: flags.name,
+    key: flags.key,
+    metres: flags.metres ? Number(flags.metres) : undefined,
+    terrain: !flags.flat,
+    log: (m) => console.log(`  ${m}`),
+  });
+} catch (err) {
+  console.error(`\n  ${err.message}\n`);
+  process.exit(1);
 }
 
-const fetchedAt = new Date().toISOString();
-const { world, stats } = osmToPlace(json, { key, name, bbox, elevation, fetchedAt, mirror });
-
-console.log(`  built: ${Object.entries(stats).map(([k, v]) => `${v} ${k}`).join(', ')}`);
-
-mkdirSync(PLACES_DIR, { recursive: true });
-const out = join(PLACES_DIR, `${key}.json`);
+const { world, stats, bbox, key, name, span } = result;
+mkdirSync(PLACES, { recursive: true });
 const payload = world.save();
-writeFileSync(out, payload);
+writeFileSync(join(PLACES, `${key}.json`), payload);
 
-// keep an index so the app can list what has been imported
-const indexPath = join(PLACES_DIR, 'index.json');
+const indexPath = join(PLACES, 'index.json');
 const index = existsSync(indexPath) ? JSON.parse(readFileSync(indexPath, 'utf8')) : [];
-const entry = {
-  key, name, bbox, fetchedAt,
-  scale: spanE > 1200 ? 'district' : 'neighbourhood',
-  counts: stats,
-  relief: elevation ? elevation.relief : 0,
+writeFileSync(indexPath, JSON.stringify([...index.filter((x) => x.key !== key), {
+  key, name, bbox, fetchedAt: result.fetchedAt,
+  scale: span.width > 1200 ? 'district' : 'neighbourhood',
+  counts: stats, relief: world.place.meta.relief || 0,
   source: 'OpenStreetMap (ODbL)',
-};
-writeFileSync(indexPath, JSON.stringify([...index.filter((x) => x.key !== key), entry], null, 2));
+}], null, 2));
 
-console.log(`  → ${out}  (${(payload.length / 1024).toFixed(0)} KB, ${((Date.now() - t0) / 1000).toFixed(1)}s)`);
+console.log(`  → places/${key}.json  (${(payload.length / 1024).toFixed(0)} KB, ${((Date.now() - t0) / 1000).toFixed(1)}s)`);
 console.log('  © OpenStreetMap contributors, ODbL\n');

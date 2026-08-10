@@ -40,9 +40,11 @@ Both suites run with no network, no API key, and no build step.
 
 ## What each one refuses to do
 
-**CREO** now works on real ground. `node import.js --preset=babadogo` pulls 392
-actual building footprints and 87 actual roads out of OpenStreetMap, with
-elevation from a public DEM — no API key for either. Measured on that real data:
+**CREO** works on any real location. Open the place menu, choose *Take me
+anywhere*, and type a street or a district: Nominatim resolves the name, Overpass
+supplies what is built there, and public terrarium tiles supply the ground. No
+key, no server — central Rome loads in the browser in about 25 seconds with
+3 062 real buildings and 87 m of relief. Measured on real OSM data:
 600 proposals, 0 crashes, 0 cases of geometry sitting on a building without the
 certificate naming it, and placement exact to 0.0000 m. It will not silently
 move a conflicting proposal to nicer ground. Point at
