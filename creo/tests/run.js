@@ -1014,6 +1014,131 @@ group('real — a place that exists', () => {
   });
 });
 
+// ============================================================ NO DANGLING ===
+// captureView() and openAIPanel() were both deleted with the panel that used
+// them, while three call sites stayed behind. Every one threw a ReferenceError
+// at the exact moment a person asked for something, which the interface
+// reported as nothing happening at all. No test could see it because none of
+// this runs headless. So check the source itself.
+
+group('references', () => {
+  const GLOBALS = new Set([
+    'fetch', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'parseFloat',
+    'parseInt', 'isNaN', 'isFinite', 'structuredClone', 'queueMicrotask', 'encodeURIComponent',
+    'decodeURIComponent', 'requestAnimationFrame', 'cancelAnimationFrame', 'addEventListener',
+    'removeEventListener', 'alert', 'confirm', 'atob', 'btoa', 'getComputedStyle', 'matchMedia',
+    'reportError', 'require', 'importScripts', 'postMessage', 'createImageBitmap',
+  ]);
+  const KEYWORDS = /^(if|for|while|switch|catch|return|typeof|new|await|async|function|do|else|of|in|delete|void|yield|import|export|case)$/;
+
+  /** Strip comments, template/quoted strings and regex literals: none are code. */
+  function strip(src) {
+    let out = '', i = 0, prev = '';
+    while (i < src.length) {
+      const c = src[i], two = src.slice(i, i + 2);
+      if (two === '/*') { const e = src.indexOf('*/', i + 2); i = e < 0 ? src.length : e + 2; out += ' '; continue; }
+      if (two === '//') { const e = src.indexOf('\n', i); i = e < 0 ? src.length : e; out += ' '; continue; }
+      if (c === '`' || c === "'" || c === '"') {
+        i++;
+        while (i < src.length && src[i] !== c) i += src[i] === '\\' ? 2 : 1;
+        i++; out += c === '`' ? '``' : `${c}${c}`; prev = ')'; continue;
+      }
+      // a slash is a regex only where a value cannot precede it
+      if (c === '/' && !/[\w$)\]]/.test(prev)) {
+        let j = i + 1, cls = false;
+        while (j < src.length) {
+          if (src[j] === '\\') { j += 2; continue; }
+          if (src[j] === '[') cls = true;
+          else if (src[j] === ']') cls = false;
+          else if (src[j] === '/' && !cls) break;
+          else if (src[j] === '\n') { j = -1; break; }
+          j++;
+        }
+        if (j > 0) { i = j + 1; while (/[a-z]/.test(src[i] || '')) i++; out += '/RE/'; prev = ')'; continue; }
+      }
+      out += c;
+      if (!/\s/.test(c)) prev = c;
+      i++;
+    }
+    return out;
+  }
+
+  /** Everything a file introduces: declarations, methods, imports, parameters. */
+  function declaredIn(src) {
+    const d = new Set();
+    const add = (re, i = 1) => { for (const m of src.matchAll(re)) if (m[i]) d.add(m[i]); };
+    add(/\b(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)/g);
+    add(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)/g);
+    add(/\bclass\s+([A-Za-z_$][\w$]*)/g);
+    add(/\bcatch\s*\(\s*([A-Za-z_$][\w$]*)/g);
+    add(/\bimport\s+([A-Za-z_$][\w$]*)\s+from/g);
+    add(/\bimport\s*\*\s*as\s+([A-Za-z_$][\w$]*)/g);
+    for (const m of src.matchAll(/\bimport\s*\{([^}]*)\}/g)) {
+      for (const part of m[1].split(',')) {
+        const n = part.trim().split(/\s+as\s+/).pop().trim();
+        if (n) d.add(n);
+      }
+    }
+    // class and object methods:  name(...) {
+    add(/^\s*(?:static\s+)?(?:async\s+)?\*?\s*([A-Za-z_$][\w$]*)\s*\([^;=]*\)\s*\{/gm);
+    // destructured bindings
+    for (const m of src.matchAll(/(?:const|let|var)\s*[[{]([^\]}]*)[\]}]/g)) {
+      for (const n of m[1].matchAll(/([A-Za-z_$][\w$]*)/g)) d.add(n[1]);
+    }
+    // every parameter list, scanned with balanced parens so that defaults
+    // containing their own arrow functions do not break the match
+    for (let i = 0; i < src.length; i++) {
+      if (src[i] !== '(') continue;
+      let depth = 0, j = i;
+      for (; j < src.length; j++) {
+        if (src[j] === '(') depth++;
+        else if (src[j] === ')' && --depth === 0) break;
+      }
+      const after = src.slice(j + 1, j + 4);
+      if (!/^\s*(=>|\{)/.test(after)) continue;
+      for (const n of src.slice(i + 1, j).matchAll(/([A-Za-z_$][\w$]*)/g)) d.add(n[1]);
+      i = j;
+    }
+    return d;
+  }
+
+  const FILES = ['src/ui/app.js', 'src/ui/chrome.js', 'src/ui/importui.js',
+    'src/ai/operator.js', 'src/ai/modes.js', 'src/ai/investigate.js'];
+
+  for (const file of FILES) {
+    test(`${file} calls nothing it does not have`, () => {
+      const src = strip(readFileSync(new URL(`../${file}`, import.meta.url), 'utf8'));
+      const declared = declaredIn(src);
+      const missing = new Set();
+      for (const m of src.matchAll(/(^|[^.\w$?])([a-zA-Z_$][\w$]*)\s*\(/g)) {
+        const n = m[2];
+        if (declared.has(n) || GLOBALS.has(n) || KEYWORDS.test(n) || /^[A-Z]/.test(n)) continue;
+        missing.add(n);
+      }
+      eq([...missing].sort().join(', '), '', `undefined at call time in ${file}`);
+    });
+  }
+
+  // and the ranking the interface promises
+  test('the 5.6 line is preferred over everything older', () => {
+    const src = readFileSync(new URL('../src/ui/app.js', import.meta.url), 'utf8');
+    const block = src.slice(src.indexOf('const PREFERRED = ['), src.indexOf('function rankModel'));
+    const PREFERRED = eval(block.slice(block.indexOf('['), block.lastIndexOf(']') + 1));
+    const rank = (m) => {
+      for (let i = 0; i < PREFERRED.length; i++) if (PREFERRED[i].test(m)) return i;
+      if (/gpt-4o/i.test(m)) return PREFERRED.length + 1;
+      return PREFERRED.length;
+    };
+    const ordered = ['gpt-4o', 'gpt-4o-mini', 'gpt-5.6-terra', 'gpt-4.1', 'gpt-5.6-sol',
+      'o3', 'gpt-5', 'gpt-5.6-luna', 'gpt-3.5-turbo', 'gpt-5.6']
+      .sort((a, b) => rank(a) - rank(b) || b.localeCompare(a));
+    eq(ordered[0], 'gpt-5.6-sol', 'sol must be first');
+    eq(ordered[1], 'gpt-5.6-luna', 'luna second');
+    eq(ordered[2], 'gpt-5.6-terra', 'terra third');
+    eq(ordered[ordered.length - 1], 'gpt-4o', 'gpt-4o is a fallback, never a default');
+  });
+});
+
 // ================================================================== REPORT ===
 console.log(`\n${failed === 0 ? '\x1b[32m' : '\x1b[31m'}${passed} passed, ${failed} failed\x1b[0m`);
 if (failed) {

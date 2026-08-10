@@ -667,7 +667,8 @@ async function runAssistant(request) {
     showWorking(chosen, STEP_LABELS.asking);
     const view = {
       camera: { target: S.cam.target, dist: S.cam.dist },
-      selection: [...S.selection], pointer: S.pointer, image: captureView(),
+      selection: [...S.selection], pointer: S.pointer,
+      image: mode.vision === 'never' ? null : captureView(),
     };
     let result = await proposeOperations(S.world, request, view,
       { effort: mode.effort, vision: mode.vision, findings });
@@ -716,11 +717,51 @@ async function runAssistant(request) {
     } else if (said) toast(said);
   } catch (err) {
     stopWorking();
-    toast(`Could not answer: ${String(err.message).slice(0, 100)}`);
+    reportFailure('Could not answer', err);
   } finally {
     S.busy = false;
     $('working').hidden = true;
   }
+}
+
+// ------------------------------------------------------------------ vision --
+// A WebGL2 drawing buffer is cleared the moment the frame is composited, so
+// reading the canvas from ordinary code yields black — and black is worse than
+// nothing, because the model then describes a void with confidence.
+//
+// The fix is not preserveDrawingBuffer (which taxes every frame for a picture
+// taken rarely) and not waiting for a frame (requestAnimationFrame does not run
+// in a backgrounded tab, so vision would silently vanish). Draw and read in the
+// SAME synchronous task: the buffer cannot be cleared until this task yields.
+function captureView(maxWidth = 1100, quality = 0.72) {
+  try {
+    rebuild();
+    renderer.draw(viewProj());
+    const c = document.createElement('canvas');
+    const scale = Math.min(1, maxWidth / canvas.width);
+    c.width = Math.round(canvas.width * scale);
+    c.height = Math.round(canvas.height * scale);
+    c.getContext('2d').drawImage(canvas, 0, 0, c.width, c.height);
+    if (isBlank(c)) { console.warn('[CREO] view capture came back empty; sending no image'); return null; }
+    return c.toDataURL('image/jpeg', quality);
+  } catch (err) {
+    console.warn('[CREO] view capture failed:', err);
+    return null;
+  }
+}
+
+/** True if every sampled pixel is identical — an empty read, not a dark scene. */
+function isBlank(c) {
+  try {
+    const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+    const step = Math.max(4, Math.floor(d.length / 4 / 500) * 4);
+    let first = -1;
+    for (let i = 0; i < d.length; i += step) {
+      const v = d[i] + d[i + 1] * 256 + d[i + 2] * 65536;
+      if (first < 0) first = v; else if (v !== first) return false;
+    }
+    return true;
+  } catch { return false; }
 }
 
 /** Wait for one drawn frame, so a screenshot shows what was just done. */
@@ -1236,6 +1277,27 @@ $('subjectClose').onclick = () => {
 // The key belongs on the page, not three gestures down. CREO works without one,
 // so this says so rather than blocking the door.
 
+// What this work actually wants, in order. The 5.6 line — sol, luna, terra — is
+// what CREO is built against: spatial reasoning over a world it has to look at.
+// Everything below is fallback, and gpt-4o is last on purpose: it was only ever
+// the default because a stale id was shipped, never because it was the right
+// tool for reasoning about ground and water.
+const PREFERRED = [
+  /(^|[-\/])gpt-?5\.6[-.]?sol\b|^sol\b/i,
+  /(^|[-\/])gpt-?5\.6[-.]?luna\b|^luna\b/i,
+  /(^|[-\/])gpt-?5\.6[-.]?terra\b|^terra\b/i,
+  /(^|[-\/])gpt-?5\.6\b/i,
+  /(^|[-\/])gpt-?5\b/i,
+  /^o[34]\b/i,
+  /(^|[-\/])gpt-4\.1\b/i,
+];
+
+function rankModel(m) {
+  for (let i = 0; i < PREFERRED.length; i++) if (PREFERRED[i].test(m)) return i;
+  if (/gpt-4o/i.test(m)) return PREFERRED.length + 1;
+  return PREFERRED.length;
+}
+
 function openAIPanel() {
   const cfg = getConfig();
   $('setupKey').value = cfg.key || '';
@@ -1261,12 +1323,14 @@ function openAIPanel() {
     setStatus('asking the endpoint what it has\u2026');
     try {
       const all = await listModels();
-      // Rank by what this task actually needs: reasoning first, then recency.
-      const rank = (m) => (/^(gpt-5|o[34]|gpt-4\.1)/.test(m) ? 0 : /^gpt-4o/.test(m) ? 2 : 1);
       const usable = all.filter((m) => !/embed|whisper|tts|dall|moderation|audio|realtime|image/.test(m))
-        .sort((a, b) => rank(a) - rank(b) || b.localeCompare(a));
+        .sort((a, b) => rankModel(a) - rankModel(b) || b.localeCompare(a));
+      if (!usable.length) { setStatus('the key works, but this endpoint offers no usable text models'); return; }
       fill(usable, cfg.model || usable[0]);
-      setStatus(`${usable.length} models \u2014 ${usable[0]} is the most capable this key can reach`);
+      const named = PREFERRED.find((p) => usable.some((m) => p.test(m)));
+      setStatus(named
+        ? `${usable.length} models \u2014 using ${usable[0]}, the most capable this key can reach`
+        : `${usable.length} models \u2014 ${usable[0]}. No sol/luna/terra model on this key.`);
       if (!cfg.model) setConfig({ model: usable[0] });
     } catch (err) {
       setStatus(String(err.message).slice(0, 140));
@@ -1707,6 +1771,19 @@ if (!hasKey() && !localStorage.getItem('creo.sawSetup') && !shouldShowHelp()) {
 requestAnimationFrame(frame);
 addEventListener('resize', () => { invalidate({ plan: true }); });
 
+// ------------------------------------------------------------------ errors --
+// Nothing may fail silently. A dangling reference inside an async handler used
+// to vanish into an unhandled rejection and the interface simply did nothing,
+// which is the worst thing an interface can do.
+function reportFailure(what, err) {
+  const msg = String(err?.message || err || 'unknown');
+  console.error(`[CREO] ${what}:`, err);
+  toast(`${what}: ${msg.slice(0, 120)}`);
+  S.lastError = { what, message: msg, stack: String(err?.stack || ''), at: new Date().toISOString() };
+}
+addEventListener('error', (e) => reportFailure('Something broke', e.error || e.message));
+addEventListener('unhandledrejection', (e) => reportFailure('A request failed', e.reason));
+
 // expose for the browser-side test harness (§29: the builder does not grade itself)
 window.CREO = {
   S, saySomething, context, runAssistant,
@@ -1715,7 +1792,7 @@ window.CREO = {
   plan: (t) => { const c = context(); return plan(S.world, interpret(t, c), c); },
   select: (ids) => { S.selection = new Set(ids); S.dirty = true; showTools(); },
   frameAll, openNote, openHelp, runAssistant, setMode: setMode_,
-  openSetup: openAIPanel, askSubject, showTools,
+  openSetup: openAIPanel, askSubject, showTools, rankModel, captureView, PREFERRED,
   _minimap: () => minimap,
   pointAt: (p) => { S.pointer = p; },
   draw: (pts, closed) => { S.stroke = pts; S.strokeClosed = closed; S.dirty = true; },
