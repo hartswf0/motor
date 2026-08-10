@@ -165,6 +165,14 @@ section p { margin: 0 0 10px; color: var(--dim); font-size: 13px; }
   padding: 8px 16px; font-size: 13px; max-width: 88vw; text-align: center;
 }
 
+#attribution {
+  position: fixed; left: 12px; bottom: calc(70px + var(--safe)); z-index: 4;
+  max-width: min(92vw, 560px); font-size: 11px; line-height: 1.4; color: var(--dim);
+  background: rgba(12,14,18,.72); border: 1px solid var(--edge); border-radius: 8px;
+  padding: 5px 9px; pointer-events: none;
+}
+@media (min-width: 760px) { #attribution { bottom: calc(74px + var(--safe)); } }
+
 #labels { position: fixed; inset: 0; pointer-events: none; }
 #labels .label {
   position: absolute; transform: translate(-50%, -100%);

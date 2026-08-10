@@ -7,6 +7,7 @@
 
 import * as G from '../core/geom.js';
 import { buildPlace, PLACES } from '../places/index.js';
+import { listImported, loadImported, attribution } from '../places/imported.js';
 import { World } from '../core/world.js';
 import { makeContext } from '../lang/deixis.js';
 import { interpret } from '../lang/interpret.js';
@@ -701,11 +702,32 @@ $('modeDraw').onclick = () => setMode(S.mode === 'draw' ? 'select' : 'draw');
 $('undoBtn').onclick = () => { const e = S.world.undo(); if (e) toast(`Undone: ${e.label}`); refreshChrome(); S.dirty = true; };
 $('redoBtn').onclick = () => { const e = S.world.redo(); if (e) toast(`Redone: ${e.label}`); refreshChrome(); S.dirty = true; };
 
-$('placeChip').onclick = (ev) => {
+$('placeChip').onclick = async (ev) => {
   const menu = document.createElement('div');
   menu.className = 'menu';
   menu.style.left = '12px';
   menu.style.top = `${ev.currentTarget.getBoundingClientRect().bottom + 8}px`;
+  const imported = await listImported();
+  if (imported.length) {
+    const h = document.createElement('div');
+    h.className = 'menuLabel';
+    h.textContent = 'Real places — OpenStreetMap';
+    menu.append(h);
+  }
+  for (const p of imported) {
+    const b = document.createElement('button');
+    b.className = p.key === S.placeKey ? 'on' : '';
+    const c = p.counts || {};
+    b.innerHTML = `${p.name}<span class="sub">${c.buildings || 0} buildings · ${c.roads || 0} roads · ${p.relief || 0} m relief</span>`;
+    b.onclick = () => { menu.remove(); loadPlace(p.key); };
+    menu.append(b);
+  }
+  if (imported.length) {
+    const h = document.createElement('div');
+    h.className = 'menuLabel';
+    h.textContent = 'Synthetic places — invented, for testing the loop';
+    menu.append(h);
+  }
   for (const p of PLACES) {
     const b = document.createElement('button');
     b.className = p.key === S.placeKey ? 'on' : '';
@@ -783,16 +805,24 @@ function refreshChrome() {
 function save() {
   try { localStorage.setItem(`creo.save.${S.placeKey}`, S.world.save()); } catch { /* quota */ }
 }
-function loadPlace(key) {
+async function loadPlace(key) {
   S.placeKey = key;
   const saved = localStorage.getItem(`creo.save.${key}`);
+  const synthetic = PLACES.some((p) => p.key === key);
   try {
-    S.world = saved ? World.load(saved) : buildPlace(key);
-  } catch {
-    S.world = buildPlace(key);
+    if (saved) S.world = World.load(saved);
+    else if (synthetic) S.world = buildPlace(key);
+    else S.world = await loadImported(key);          // a real place, from OSM
+  } catch (err) {
+    console.warn('falling back to a synthetic place:', err.message);
+    S.world = buildPlace(synthetic ? key : 'settlement');
+    S.placeKey = synthetic ? key : 'settlement';
   }
   S.selection.clear(); S.highlight.clear(); S.stroke = null; S.plan = null; S.overlay = null; S.utterances = [];
-  $('placeName').textContent = PLACES.find((p) => p.key === key).name.split(' — ')[0];
+  $('placeName').textContent = (PLACES.find((p) => p.key === S.placeKey)?.name || S.world.place.name).split(' — ')[0].split(',')[0];
+  const credit = attribution(S.world);
+  $('attribution').textContent = credit || '';
+  $('attribution').hidden = !credit;
   hide('proposal'); hide('answer'); hide('branches'); hide('tools');
   frameWorld();
   refreshChrome();

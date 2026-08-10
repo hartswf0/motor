@@ -30,7 +30,7 @@ cd worldtext && node motor.js
 ## Test them
 
 ```bash
-cd creo      && node tests/run.js    # 82 tests
+cd creo      && node tests/run.js    # 87 tests, including 5 against real OSM data
 cd worldtext && node tests/run.js    # 36 tests
 ```
 
@@ -40,7 +40,12 @@ Both suites run with no network, no API key, and no build step.
 
 ## What each one refuses to do
 
-**CREO** will not silently move a conflicting proposal to nicer ground. Point at
+**CREO** now works on real ground. `node import.js --preset=babadogo` pulls 392
+actual building footprints and 87 actual roads out of OpenStreetMap, with
+elevation from a public DEM — no API key for either. Measured on that real data:
+600 proposals, 0 crashes, 0 cases of geometry sitting on a building without the
+certificate naming it, and placement exact to 0.0000 m. It will not silently
+move a conflicting proposal to nicer ground. Point at
 an occupied spot and it builds there and names what it hit. It will not let
 generated geometry ignore geometry you moved by hand. It will not resolve "here"
 by guessing when nothing was indicated — it asks. It will not let you commit a

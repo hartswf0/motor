@@ -104,6 +104,7 @@ export class Place {
     this.tick = 0;
     this.landmarks = new Map();             // name -> [x,y] for "toward the river"
     this.uid = 0;                           // this place's own id allocator
+    this.meta = null;                       // provenance of the place itself (source, licence, bbox)
     const root = makeBranch('AS_IS', { name: 'As it is' });
     this.branches.set('AS_IS', root);
     this.overlays.set('AS_IS', new Map());
@@ -226,6 +227,9 @@ export class Place {
       branches: [...this.branches.values()],
       relations: this.relations,
       landmarks: [...this.landmarks.entries()],
+      // Where this place came from and under what licence travels WITH it.
+      // Losing it on save would strip the attribution ODbL requires.
+      meta: this.meta || null,
       uid: this.uid,
     };
   }
@@ -241,6 +245,7 @@ export class Place {
     p.activeBranch = json.activeBranch;
     if (json.terrain && HeightfieldCtor) p.terrain = HeightfieldCtor.fromJSON(json.terrain);
     p.uid = json.uid || 0;
+    p.meta = json.meta || null;
     return p;
   }
 }

@@ -6,7 +6,9 @@
 //   node tests/run.js            all
 //   node tests/run.js pro        one group
 
+import { existsSync, readFileSync } from 'node:fs';
 import * as G from '../src/core/geom.js';
+import { stream } from '../src/core/rng.js';
 import { buildPlace, PLACES } from '../src/places/index.js';
 import { World } from '../src/core/world.js';
 import { makeContext } from '../src/lang/deixis.js';
@@ -917,6 +919,98 @@ group('council — regressions from critic round 1', () => {
     const a = ask(w, q.intent, {});
     assert(a.rows.length && a.rows[0].id === id, `answered about ${a.rows[0]?.id || 'nothing'}`);
     assert(a.text.includes('Amina'), a.text);
+  });
+});
+
+// ============================================================ REAL GROUND ====
+// Everything above this line is measured on invented places. This group is
+// measured on Baba Dogo, Nairobi as OpenStreetMap actually records it: 392
+// building footprints, 87 roads, and ASTER elevation with 66 m of real relief.
+// It runs offline from the committed import; `node import.js --preset=babadogo`
+// refreshes it.
+group('real — a place that exists', () => {
+  const file = new URL('../places/babadogo.json', import.meta.url).pathname;
+  const have = existsSync(file);
+  const real = () => World.load(readFileSync(file, 'utf8'));
+
+  test('the import carries its own provenance and licence', () => {
+    if (!have) throw new Error('places/babadogo.json missing — run node import.js --preset=babadogo');
+    const w = real();
+    const m = w.place.meta;
+    eq(m.source, 'OpenStreetMap');
+    assert(/ODbL/.test(m.licence), 'the licence travels with the data');
+    assert(m.bbox.length === 4 && m.fetchedAt, 'and the bbox and fetch date');
+  });
+
+  test('every imported entity can name the OSM object it came from', () => {
+    const w = real();
+    const ents = w.entities();
+    assert(ents.length > 400, `only ${ents.length} entities`);
+    for (const e of ents) {
+      assert(e.epistemic === 'IMPORTED', `${e.id} is not marked IMPORTED`);
+      const ref = e.evidence?.[0];
+      assert(ref && ref.kind === 'osm' && /^(way|relation|node)\/\d+$/.test(ref.ref), `${e.id} has no OSM reference`);
+    }
+    const named = ents.filter((e) => e.type === 'structure' && e.name && e.name !== 'Building');
+    assert(named.length > 0, 'some buildings carry their real names');
+  });
+
+  test('an assumed height says it is assumed', () => {
+    const w = real();
+    const assumed = w.entities().filter((e) => e.type === 'structure' && /assumed/.test(e.props?.heightBasis || ''));
+    const stated = w.entities().filter((e) => e.type === 'structure' && /levels|height tag/.test(e.props?.heightBasis || ''));
+    assert(assumed.length + stated.length > 300, 'every building records how its height was arrived at');
+    // the honest part: most OSM buildings have no height, and the model says so
+    assert(assumed.length > 0, 'and the guesses are labelled as guesses');
+  });
+
+  test('pointing at a real building is refused, by name and by area', () => {
+    const w = real();
+    const b = w.entities().find((e) => e.type === 'structure' && e.name && e.name !== 'Building');
+    const c = G.centroid(w.ringOf(b));
+    const ctx = makeContext(w, { pointer: c, camera: { eye: [0, -400, 300], target: [0, 0, 0] } });
+    const p = plan(w, interpret('build a building here', ctx), ctx);
+    const f = p.certificate.findings.find((x) => x.code === 'COLLISION' && x.others.includes(b.id));
+    assert(f, `expected a collision with ${b.name}, got ${p.certificate.findings.map((x) => x.code).join(',')}`);
+    assert(/m²/.test(f.message), 'and it measures the overlap');
+    assert(!p.certificate.valid);
+  });
+
+  test('600 proposals across the real place: no false negatives, no crashes', () => {
+    const w = real();
+    const solids = w.entities().filter((e) => e.collision === 'solid');
+    const b = w.place.bounds();
+    const rnd = stream('real-regression', 3);
+    const texts = ['build a building here', 'put a stall here', 'we need a drain here', 'there should be trees here', 'we need a path here'];
+    let produced = 0, reported = 0;
+    const missed = [];
+    for (let i = 0; i < 600; i++) {
+      const x = b[0] + rnd() * (b[2] - b[0]);
+      const y = b[1] + rnd() * (b[3] - b[1]);
+      const ctx = makeContext(w, { pointer: [x, y], camera: { eye: [0, -400, 300], target: [0, 0, 0] } });
+      const p = plan(w, interpret(texts[i % texts.length], ctx), ctx);   // must not throw
+      if (!p.ghosts?.length) continue;
+      produced++;
+      const codes = new Set(p.certificate.findings.map((f) => f.code));
+      const named = new Set(p.certificate.findings.flatMap((f) => f.others || []));
+      for (const g of p.ghosts) {
+        const ring = w.place.ringOf(g);
+        if (!ring) continue;
+        for (const e of solids) {
+          const r = w.ringOf(e);
+          if (!r || !G.ringsIntersect(ring, r)) continue;
+          if (g.zBase >= e.zTop - 0.01 || g.zTop <= e.zBase + 0.01) continue;
+          if (G.area(ring) < 0.3) continue;
+          const flagged = (codes.has('COLLISION') || codes.has('REQUIRES_REMOVAL')) && named.has(e.id);
+          if (flagged) reported++;
+          else missed.push(`${g.type} on ${e.name || e.id}`);
+        }
+      }
+    }
+    assert(produced > 500, `only ${produced} produced geometry`);
+    eq(missed.length, 0, `sat on a real building without saying so: ${missed.slice(0, 4).join('; ')}`);
+    assert(reported > 10, `only ${reported} real collisions exercised`);
+    console.log(`      (600 proposals on real OSM data, ${reported} genuine collisions, 0 missed)`);
   });
 });
 

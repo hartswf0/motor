@@ -1,0 +1,26 @@
+[
+  {
+    "key": "babadogo",
+    "name": "Baba Dogo, Nairobi",
+    "bbox": [
+      -1.2395,
+      36.8745,
+      -1.2325,
+      36.8835
+    ],
+    "fetchedAt": "2026-08-10T15:47:27.861Z",
+    "scale": "neighbourhood",
+    "counts": {
+      "buildings": 392,
+      "roads": 87,
+      "paths": 1,
+      "water": 1,
+      "surfaces": 4,
+      "trees": 0,
+      "walls": 8,
+      "skipped": 0
+    },
+    "relief": 66,
+    "source": "OpenStreetMap (ODbL)"
+  }
+]

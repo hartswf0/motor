@@ -271,3 +271,47 @@ and preserve the accident as its own timeline. Branches can hold contradictory
 futures; they cannot yet hold contradictory *aesthetics*.
 
 That is the next pass, and it belongs to the artist.
+
+---
+
+## Pass 10 — the audit, and real ground
+
+**Deepest failure.** Asked whether a city planner could trust it, the honest
+answer was that the question had no answer: every place was a procedural fiction
+anchored to a real latitude it had no relationship to. The engine's collision
+reasoning had never seen a building it did not invent.
+
+**Invariant.** *After this pass it must be impossible to claim CREO respects
+buildings and roads without a measurement on buildings and roads that exist.*
+
+**The audit.** `creo/tests/audit-geometry.mjs` — 1080 proposals across the nine
+synthetic places, with ground truth re-derived directly from polygons rather
+than from the certificate. Results: placement exact (0.0000 m median and max);
+138 of 138 real building collisions correctly reported; **0 false negatives**;
+44 conservative flags below the audit's own threshold.
+
+It also found a real defect. Route conflicts had 71 false negatives, and the
+cause was structural: a vertical interval is one scalar pair per entity, but a
+graded trench's bed falls along its length. A 100 m drain running down to an
+outfall at z = 1.20 was compared against a lane sitting on higher ground at
+z = 5.11, so the clearance test concluded the trench passed underneath it and
+said nothing. Height is now interpolated at the point the footprints actually
+meet, and an open trench is treated as reaching the surface. 71 → 53, and every
+remaining one is a footpath meeting a footpath, which is a junction by design.
+
+**Real ground.** `node import.js --preset=babadogo` reads OpenStreetMap via
+Overpass and elevation from opentopodata — both free, both keyless. Baba Dogo,
+Nairobi: 392 building footprints, 87 roads, 8 walls, the Nairobi River, and
+66 m of relief from ASTER. Every entity keeps its OSM id, its tags and its fetch
+date; heights record whether they came from the data or were assumed.
+
+**Measured on the real place:** 600 proposals, 0 crashes, placement exact,
+0 cases of geometry sitting on a real building without the certificate naming
+it. Committed as five regression tests so the claim cannot quietly rot.
+
+**What this still does not establish.** That the water model is calibrated (it
+is comparative, and says so); that OSM is complete or correct for any given
+neighbourhood; that assumed building heights are safe to compute volumes from;
+or that a planning process would accept the audit trail. It establishes that the
+geometry reasoning is sound on ground that exists — which is the precondition
+for the rest, not a substitute for it.

@@ -8,9 +8,20 @@ transformation. Not a picture of one. Not a scene generated beside the real
 world. A change to the world, which the world then argues with.
 
 ```bash
-python3 serve.py 8800        # then open http://localhost:8800
-node tests/run.js            # 82 invariants, magic tests, professional tests
+python3 serve.py 8800                    # then open http://localhost:8800
+node tests/run.js                        # 87 tests, offline
+node import.js --preset=babadogo         # import a real place from OpenStreetMap
 ```
+
+Presets: `babadogo`, `kibera`, `soho`, `venice`, `amsterdam` — or any bounding box:
+
+```bash
+node import.js --bbox=52.3735,4.8790,52.3785,4.8860 --name="Jordaan" --key=jordaan
+```
+
+No API key. OpenStreetMap's Overpass API and opentopodata.org are both free and
+keyless. After an import the place is a file, and everything — including the
+tests — runs offline.
 
 No dependencies. No build step. No network calls. No API keys.
 
@@ -91,7 +102,9 @@ People revise it. The revision remains.
 - The water model is comparative, not absolute: steady-state ponding, no momentum, no pipe hydraulics. Its assumptions are printed in `WATER_MODEL.assumptions` and shown under every metric it produces.
 - Multiplayer is single-device today. The journal is the right substrate for it — every mutation is already an ordered, authored, invertible event — but no transport exists yet.
 - Speech uses the browser's recogniser where present; everything it can do, typing and drawing can also do.
-- Places are seeded procedurally from real anchors rather than imported from OSM. Export to WGS84 GeoJSON works today and round-trips; import is the missing half, and it is a reader, not a re-architecture.
+- **Real places import now.** `node import.js` reads OpenStreetMap and a public DEM: 392 real building footprints, 87 real roads, and 66 m of real relief for Baba Dogo, Nairobi. Every imported entity keeps its OSM identity (`way/515200210`), its tags, and the date it was fetched, so "why are you here?" answers with a citation a surveyor can follow. Data © OpenStreetMap contributors, ODbL.
+- **Heights are mostly guesses, and say so.** OSM rarely records building height. Each structure carries `heightBasis` — `"3 levels × 3.1 m"` when the data says, `"assumed from building type — no height in OSM"` when it does not. Do not use this for anything that depends on volume.
+- The nine synthetic places remain, clearly labelled as invented. They exist to exercise the loop, not to represent anywhere.
 - The water figures are comparative. The direction of a change is robust; its magnitude moves with grid resolution, and every metric says so underneath itself.
 - Time exists as scenario (rain, night, years) but not yet as a browsable past.
 
