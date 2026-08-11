@@ -390,3 +390,6 @@ body.subject #plan { bottom: var(--subjectH, calc(74px + var(--safe))); }
 
 /* Labels are positioned by transform so they never trigger layout. */
 #labels .label { left: 0; top: 0; will-change: transform; }
+
+/* A drop target has to say it is one, or nobody tries. */
+#sayWrap.dropping { outline: 2px dashed var(--accent); outline-offset: 3px; border-radius: 999px; }

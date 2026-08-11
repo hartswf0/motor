@@ -9,13 +9,13 @@ import * as G from '../core/geom.js';
 import { buildPlace, PLACES } from '../places/index.js';
 import { listImported, loadImported, attribution } from '../places/imported.js';
 import { openImportPanel, openReframePanel, reframe, previewGround, cachePut, listCached, loadCached } from './importui.js';
-import { importPlace } from '../import/place.js';
+import { importPlace, slug } from '../import/place.js';
 import { proposeOperations, critique, hasKey, getConfig, setConfig, listModels, EFFORTS, lastCalls } from '../ai/operator.js';
 import { MODES, MODE_ORDER, routeMode, STEP_LABELS } from '../ai/modes.js';
 import { investigate, summarise } from '../ai/investigate.js';
 import { Minimap, openLayers, openHelp, shouldShowHelp, hiddenTypes } from './chrome.js';
 import { runWater } from '../sim/water.js';
-import { toGeoJSON } from '../world/export.js';
+import { toGeoJSON, fromGeoJSON } from '../world/export.js';
 import { World } from '../core/world.js';
 import { makeContext } from '../lang/deixis.js';
 import { readGLB, bodyFromModel, boxBody } from '../world/body.js';
@@ -342,6 +342,7 @@ canvas.addEventListener('pointerdown', (ev) => {
   pointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY, x0: ev.clientX, y0: ev.clientY, t: Date.now() });
   if (pointers.size === 1) {
     if (S.mode === 'draw') {
+      if (!drawable(ev.clientX, ev.clientY)) return;
       const d = drawPoint(ev.clientX, ev.clientY);
       if (d) { S.stroke = [d.p]; S.strokeHeights = [d.z]; S.strokeClosed = false; gesture = 'draw'; S.dirty = true; }
       return;
@@ -379,6 +380,7 @@ canvas.addEventListener('pointermove', (ev) => {
   pt.x = ev.clientX; pt.y = ev.clientY;
 
   if (gesture === 'draw' && S.stroke) {
+    if (!drawable(ev.clientX, ev.clientY)) return;
     const d = drawPoint(ev.clientX, ev.clientY);
     if (d && G.dist(d.p, S.stroke[S.stroke.length - 1]) > 0.8) {
       S.stroke.push(d.p);
@@ -521,6 +523,38 @@ function drawPoint(x, y) {
   }
   const p = rayToGround(S.world, rayAt(x, y));
   return p ? { p, z: null } : null;
+}
+
+/**
+ * How much ground one screen pixel is worth, HERE.
+ *
+ * Perspective is not uniform: near the bottom of the view a pixel is a third of
+ * a metre and near the horizon it is over a hundred. That is the whole
+ * explanation for the spikes in a drawn outline — not a bad reading, but a
+ * true one. A hand wobbling three pixels toward the horizon really does move
+ * three hundred metres across the ground, and no smoothing can recover an
+ * intention that was never expressible there.
+ */
+function groundScaleAt(x, y) {
+  const a = rayToGround(S.world, rayAt(x, y));
+  const b = rayToGround(S.world, rayAt(x, y - 1));
+  if (!a || !b) return Infinity;
+  return G.dist(a, b);
+}
+
+// Past this, a pixel buys more ground than anyone can mean to point at.
+const scaleLimit = () => Math.max(0.5, S.cam.dist / 220);
+let refusedAt = 0;
+
+/** Say no, once and clearly, rather than recording a metre-per-pixel guess. */
+function drawable(x, y) {
+  const scale = groundScaleAt(x, y);
+  if (scale <= scaleLimit()) return true;
+  if (Date.now() - refusedAt > 2500) {
+    refusedAt = Date.now();
+    toast(`Too oblique to draw up there — one pixel is ${scale.toFixed(0)} m of ground. Tilt down, or come closer.`);
+  }
+  return false;
 }
 
 function tap(x, y, additive) {
@@ -1570,6 +1604,76 @@ function unseat() {
   toast('The ground is as it was.');
 }
 
+// ------------------------------------------------------------- dropped in --
+// Bringing a building into a place should cost one gesture. Drag a .glb onto
+// the bar you talk into and it is read, measured, and put in your hand; the
+// next tap on the ground seats it. A .geojson lands as ground truth rather than
+// a body. Anything else says what it is and what CREO can do with it, because
+// silently ignoring a file someone dragged in is the rudest thing an interface
+// can do.
+
+function wireDropTarget() {
+  const zone = document.body;
+  const bar = $('sayWrap') || $('sayInput');
+  const arm = (on, text) => {
+    bar?.classList.toggle('dropping', on);
+    if (on && text) $('sayInput').placeholder = text;
+    else if (!on) $('sayInput').placeholder = 'Say something about this place';
+  };
+
+  zone.addEventListener('dragover', (ev) => {
+    ev.preventDefault();
+    const f = ev.dataTransfer?.items?.[0];
+    arm(true, f ? 'drop it here' : 'drop a model or a map here');
+  });
+  zone.addEventListener('dragleave', (ev) => { if (ev.target === zone) arm(false); });
+  zone.addEventListener('drop', async (ev) => {
+    ev.preventDefault();
+    arm(false);
+    const files = [...(ev.dataTransfer?.files || [])];
+    if (!files.length) return;
+    for (const file of files) await takeFile(file);
+  });
+}
+
+async function takeFile(file) {
+  const name = file.name || 'file';
+  const ext = name.toLowerCase().split('.').pop();
+  try {
+    if (ext === 'glb') {
+      const { points } = readGLB(await file.arrayBuffer());
+      const body = bodyFromModel(points, { name: name.replace(/\.glb$/i, ''), url: name });
+      takeInHand(body);
+      return;
+    }
+    if (ext === 'gltf') {
+      toast(`${name} is a .gltf, which keeps its geometry in separate files. Export it as .glb — one file, everything in it — and drop that.`);
+      return;
+    }
+    if (ext === 'geojson' || ext === 'json') {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      if (data.type === 'FeatureCollection' || data.type === 'Feature') {
+        const added = fromGeoJSON(S.world, data, { author: S.author || 'you' });
+        invalidate({ plan: true });
+        toast(`${name}: ${added?.length ?? 0} things brought in. They are marked as imported, not as things CREO invented.`);
+        return;
+      }
+      // a saved place
+      if (data.entities || data.terrain) {
+        adoptWorld(World.load(text), slug(name), name.replace(/\.json$/i, ''));
+        toast(`${name} opened.`);
+        return;
+      }
+      toast(`${name} is JSON, but not a map or a place CREO recognises.`);
+      return;
+    }
+    toast(`CREO cannot read ${ext ? `.${ext}` : 'that'} yet. It takes .glb for a building, .geojson for ground, and a saved place.`);
+  } catch (err) {
+    reportFailure(`Could not read ${name}`, err);
+  }
+}
+
 // ------------------------------------------------------------------- setup --
 // The key belongs on the page, not three gestures down. CREO works without one,
 // so this says so rather than blocking the door.
@@ -2258,6 +2362,7 @@ setMode('select');
 setAuthor(localStorage.getItem('creo.author') || '');
 loadPlace(localStorage.getItem('creo.place') || 'settlement')
   .catch((err) => reportFailure('Could not open that place', err));
+wireDropTarget();
 if (shouldShowHelp()) setTimeout(() => openHelp(), 600);
 else if (!S.author) setTimeout(() => toast('Tap “add your name” at the top so the place can remember who changed what.'), 900);
 
@@ -2291,6 +2396,7 @@ window.CREO = {
   select: (ids) => { S.selection = new Set(ids); S.dirty = true; showTools(); },
   frameAll, openNote, openHelp, runAssistant, setMode: setMode_, openFindPanel, goToEntity,
   openSetup: openAIPanel, askSubject, showTools, rankModel, captureView, PREFERRED,
+  drawPointAt: (x,y) => drawPoint(x,y),
   takeInHand, placeInHand, unseat, bodyFromURL, boxBody, inHand: () => inHand, seated: () => seated,
   get minimap() { return minimap; },
   _minimap: () => minimap,
