@@ -42,6 +42,29 @@
      own overflow, and a control you cannot see is a control you do not have. -->
 <!-- Detail follows the view: shown when you have gone somewhere with nothing
      recorded on it, and never fetching without being asked. -->
+<!-- Where you are and which way you are facing. A view that turns without a
+     compass is a picture; coordinates are how you tell anyone else. -->
+<div id="orient">
+  <div id="compass" aria-label="Which way you are facing">
+    <svg viewBox="-20 -20 40 40" width="46" height="46" aria-hidden="true">
+      <circle cx="0" cy="0" r="17" fill="rgba(10,12,16,.72)" stroke="rgba(255,255,255,.18)"/>
+      <g id="compassRose">
+        <polygon points="0,-14 -3.6,-4 3.6,-4" fill="#e86a4e"/>
+        <polygon points="0,14 -3.6,4 3.6,4" fill="rgba(255,255,255,.55)"/>
+        <text x="0" y="-16.5" text-anchor="middle" font-size="6.5" fill="rgba(255,255,255,.85)">N</text>
+        <text x="0" y="20.5" text-anchor="middle" font-size="6" fill="rgba(255,255,255,.45)">S</text>
+        <text x="17.5" y="2.2" text-anchor="middle" font-size="6" fill="rgba(255,255,255,.45)">E</text>
+        <text x="-17.5" y="2.2" text-anchor="middle" font-size="6" fill="rgba(255,255,255,.45)">W</text>
+      </g>
+    </svg>
+    <span id="bearing">—</span>
+  </div>
+  <button id="whereAmI" title="Copy this position">
+    <span id="whereLatLon">—</span>
+    <span id="whereGround"></span>
+  </button>
+</div>
+
 <div id="frameOffer" hidden>
   <span id="frameWhere"></span>
   <div class="frameRow">

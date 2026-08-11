@@ -64,7 +64,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * 429 means "wait your turn" and 504 means "I am busy", and both are normal —
  * a client that hammers through them is the reason the service needs limits.
  */
-export async function fetchOSM(bbox, { mirrors = MIRRORS, fetchImpl = fetch, rounds = 4, log = () => {} } = {}) {
+export async function fetchOSM(bbox, opts = {}) {
+  const { mirrors = MIRRORS, fetchImpl = fetch, rounds = 4, log = () => {} } = opts;
   let lastError = null;
   for (let round = 0; round < rounds; round++) {
     for (const url of mirrors) {
@@ -75,7 +76,7 @@ export async function fetchOSM(bbox, { mirrors = MIRRORS, fetchImpl = fetch, rou
             'content-type': 'application/x-www-form-urlencoded',
             'user-agent': 'CREO/0.1 (place import; github.com/hartswf0/motor)',
           },
-          body: new URLSearchParams({ data: overpassQuery(bbox) }),
+          body: new URLSearchParams({ data: (opts.query || overpassQuery)(bbox) }),
         });
         if (res.status === 429 || res.status === 504 || res.status === 503) {
           lastError = new Error(`${new URL(url).host} → ${res.status}`);
@@ -692,3 +693,57 @@ function dedupeRing(line) {
 }
 
 
+
+
+/**
+ * THE SKELETON — enough of the wider world to know where you are.
+ *
+ * The plan shows kilometres of ground and nothing on it, because detail is only
+ * fetched for a small window. But orientation does not need detail: it needs the
+ * main road, the river, and the name of the next village. That is a tiny query —
+ * major ways only, no buildings, no tags to speak of — over an area sixty times
+ * larger than the detailed one.
+ *
+ * What comes back is deliberately NOT put in the world as entities. It is not
+ * survey and it is not complete; it is a sketch for finding your way, and
+ * calling it anything else would let someone measure against it.
+ */
+export function skeletonQuery(bbox) {
+  const b = `${bbox[0]},${bbox[1]},${bbox[2]},${bbox[3]}`;
+  return `[out:json][timeout:40];
+(
+  way["highway"~"^(motorway|trunk|primary|secondary|tertiary)$"](${b});
+  way["waterway"~"^(river|stream)$"](${b});
+  way["natural"="water"](${b});
+  node["place"~"^(city|town|village|hamlet)$"](${b});
+);
+out geom qt;`;
+}
+
+const SKELETON_RANK = {
+  motorway: 0, trunk: 1, primary: 2, secondary: 3, tertiary: 4,
+};
+
+/** Turn that into polylines and labels in the place's own metres. */
+export function toSkeleton(json, projection) {
+  const ways = [], places = [];
+  for (const el of json.elements || []) {
+    const tags = el.tags || {};
+    if (el.type === 'node' && tags.place) {
+      const [x, y] = projection.toLocal(el.lat, el.lon);
+      places.push({ at: [Math.round(x), Math.round(y)], name: tags.name || null, kind: tags.place });
+      continue;
+    }
+    if (!el.geometry || el.geometry.length < 2) continue;
+    const line = el.geometry.map((g) => projection.toLocal(g.lat, g.lon).map((v) => Math.round(v)));
+    if (tags.highway) {
+      ways.push({ line, kind: 'road', rank: SKELETON_RANK[tags.highway] ?? 5, name: tags.name || null });
+    } else if (tags.waterway || tags.natural === 'water') {
+      ways.push({ line, kind: 'water', rank: 6, name: tags.name || null, area: tags.natural === 'water' });
+    }
+  }
+  return {
+    ways, places,
+    note: 'for finding your way, not for measuring: major ways only, no buildings',
+  };
+}

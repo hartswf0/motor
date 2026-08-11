@@ -6,7 +6,7 @@
 // public, and all three allow browser requests, so the app can do this live.
 
 import { resolvePlace, geocode, bboxMetres, windowAround } from './geocode.js';
-import { fetchOSM, osmToPlace, localBounds } from './osm.js';
+import { fetchOSM, osmToPlace, localBounds, skeletonQuery, toSkeleton } from './osm.js';
 import { sampleTerrain } from './terrain.js';
 import { makeProjection } from '../core/geom.js';
 
@@ -127,6 +127,27 @@ export async function importPlace(opts = {}) {
   // fact about the map, and must never be shown as a fact about the place.
   world.place.meta.detailBounds = detailBounds;
   world.place.meta.detailBBox = bbox;
+  // where local metres meet the round world, so a person can be told where they
+  // are in the terms everyone else uses
+  world.place.meta.anchor = projection.anchor;
+
+  // 5. enough of the wider world to know where you are. Cheap, and explicitly
+  // not survey — see toSkeleton.
+  if (terrain && opts.skeleton !== false) {
+    try {
+      const wideBBox = windowAround(bbox, Math.round(terrain.heightfield
+        ? (terrain.heightfield.bounds[2] - terrain.heightfield.bounds[0])
+        : bboxMetres(bbox).width));
+      log('reading the main roads and rivers around it…');
+      const { json: sk } = await fetchOSM(wideBBox, { fetchImpl, log, rounds: 1, query: skeletonQuery });
+      world.place.meta.skeleton = toSkeleton(sk, projection);
+      const s2 = world.place.meta.skeleton;
+      log(`around you: ${s2.ways.filter((w) => w.kind === 'road').length} main roads, `
+        + `${s2.ways.filter((w) => w.kind === 'water').length} watercourses, ${s2.places.length} named places`);
+    } catch (err) {
+      log(`no wider context (${String(err.message).slice(0, 50)}) — the plan will show ground only`);
+    }
+  }
 
   // An unmapped place is still a place. Refusing to open ground because nobody
   // has drawn a building on it was the map talking, not the world: an island, a

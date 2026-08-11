@@ -490,6 +490,7 @@ function clampCamera() {
   S.cam.target[2] = S.world.place.groundAt(S.cam.target[0], S.cam.target[1]);
   S.cam.pitch = Math.max(0.14, Math.min(1.45, S.cam.pitch));
   planDirty = true;
+  updateOrientation();
   clearTimeout(clampCamera._settle);
   clampCamera._settle = setTimeout(reviewFrame, 400);
   // never end up underground
@@ -1494,6 +1495,7 @@ function goToEntity(id) {
   S.selection = new Set([id]);
   S.dirty = true;
   showTools();
+  updateOrientation();
   const { height, fall } = heightOf(e);
   toast(fall > 0.5
     ? `${e.name || e.type} — ${height.toFixed(1)} m on ground that falls ${fall.toFixed(1)} m across it.`
@@ -2385,6 +2387,52 @@ $('frameGo').onclick = async () => {
   reviewFrame();
 };
 $('frameDismiss').onclick = () => { $('frameOffer').hidden = true; detailOffer = null; };
+
+/**
+ * WHERE YOU ARE, AND WHICH WAY YOU ARE FACING.
+ *
+ * A view that turns without a compass is a picture rather than a position, and
+ * local metres are unshareable — nobody outside CREO knows where [-2016, -1440]
+ * is. The place remembers the corner of the world it was cut from, so the same
+ * arithmetic that widens a window can say where you are standing in the terms
+ * everyone else uses.
+ */
+function toLatLon(x, y) {
+  const a = S.world.place.meta?.anchor;
+  if (!a) return null;
+  const lat = a[0] + y / 111320;
+  const lon = a[1] + x / (111320 * Math.max(0.05, Math.cos((a[0] * Math.PI) / 180)));
+  return [lat, lon];
+}
+
+const CARDINALS = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+
+function updateOrientation() {
+  // the camera looks along yaw from behind; north is +y in the place's metres
+  const facing = ((90 - (S.cam.yaw * 180) / Math.PI) % 360 + 360) % 360;
+  const rose = $('compassRose');
+  if (rose) rose.setAttribute('transform', `rotate(${-facing})`);
+  $('bearing').textContent = `${Math.round(facing)}° ${CARDINALS[Math.round(facing / 22.5) % 16]}`;
+
+  const p = S.pointer || [S.cam.target[0], S.cam.target[1]];
+  const ll = toLatLon(p[0], p[1]);
+  $('whereLatLon').textContent = ll
+    ? `${Math.abs(ll[0]).toFixed(5)}°${ll[0] < 0 ? 'S' : 'N'}  ${Math.abs(ll[1]).toFixed(5)}°${ll[1] < 0 ? 'W' : 'E'}`
+    : `${Math.round(p[0])}, ${Math.round(p[1])} m`;
+  const z = S.world.place.groundAt(p[0], p[1]);
+  const prov = S.world.place.terrain?.provenanceAt?.(p[0], p[1]);
+  $('whereGround').textContent = S.world.place.terrain
+    ? `${z.toFixed(0)} m${prov && prov !== 'measured' ? ` · ${prov}` : ''}`
+    : '';
+}
+
+$('whereAmI').onclick = async () => {
+  const p = S.pointer || [S.cam.target[0], S.cam.target[1]];
+  const ll = toLatLon(p[0], p[1]);
+  const text = ll ? `${ll[0].toFixed(6)}, ${ll[1].toFixed(6)}` : `${Math.round(p[0])}, ${Math.round(p[1])}`;
+  try { await navigator.clipboard.writeText(text); toast(`${text} — copied. Paste it into Take me anywhere, or send it to someone.`); }
+  catch { toast(text); }
+};
 
 $('planOut').onclick = () => { minimap.zoom(1.6); S.dirty = true; sayPlanReach(); };
 $('planIn').onclick = () => { minimap.zoom(1 / 1.6); S.dirty = true; sayPlanReach(); };

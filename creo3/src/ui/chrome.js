@@ -194,6 +194,48 @@ export class Minimap {
     }
   }
 
+  /**
+   * The skeleton: enough of the wider world to know where you are.
+   *
+   * Ranked, so a motorway reads before a lane and the eye finds the structure
+   * of the country rather than a mat of equal lines. Named places are what
+   * actually orient a person — "that is Butler, so the lake is north" — so they
+   * are drawn last and never hidden.
+   */
+  drawSkeleton(g, sk, X, Y, scale) {
+    g.save();
+    for (const w of sk.ways) {
+      if (w.kind === 'water') {
+        g.strokeStyle = 'rgba(90,170,220,.55)';
+        g.lineWidth = w.area ? 0.8 : 0.7;
+      } else {
+        // rank 0 is a motorway, 4 a tertiary lane
+        const strength = 0.75 - w.rank * 0.11;
+        g.strokeStyle = `rgba(250,225,150,${Math.max(0.18, strength)})`;
+        g.lineWidth = Math.max(0.6, 1.9 - w.rank * 0.32);
+      }
+      g.beginPath();
+      g.moveTo(X(w.line[0][0]), Y(w.line[0][1]));
+      for (let i = 1; i < w.line.length; i++) g.lineTo(X(w.line[i][0]), Y(w.line[i][1]));
+      g.stroke();
+    }
+    // named places last, and legibly: this is the thing that actually orients
+    g.font = '9px ui-sans-serif, system-ui, sans-serif';
+    for (const p of sk.places) {
+      const x = X(p.at[0]), y = Y(p.at[1]);
+      g.fillStyle = 'rgba(255,255,255,.9)';
+      g.beginPath(); g.arc(x, y, p.kind === 'town' || p.kind === 'city' ? 2.6 : 1.8, 0, 7); g.fill();
+      if (p.name) {
+        g.fillStyle = 'rgba(0,0,0,.65)';
+        const w2 = g.measureText(p.name).width;
+        g.fillRect(x + 4, y - 7, w2 + 4, 11);
+        g.fillStyle = 'rgba(255,255,255,.92)';
+        g.fillText(p.name, x + 6, y + 1.5);
+      }
+    }
+    g.restore();
+  }
+
   /** Which neighbouring window a point on the plan falls in. */
   choose(p) {
     const b = this.placeBounds;
@@ -268,6 +310,9 @@ export class Minimap {
     // Shaded relief, from the same Ground everything else reads (I1). Cheap: it
     // is one fill per sample, at the plan's own resolution, not the world's.
     if (world.place.terrain) this.drawRelief(g, world.place.terrain, X, Y, scale);
+    // the wider world, sketched: the main road, the river, the next village.
+    // Drawn UNDER the detailed contents, because it is the coarser account.
+    if (world.place.meta?.skeleton) this.drawSkeleton(g, world.place.meta.skeleton, X, Y, scale);
     else {
       g.fillStyle = 'rgba(255,255,255,.045)';
       g.fillRect(X(pb[0]), Y(pb[3]), (pb[2] - pb[0]) * scale, (pb[3] - pb[1]) * scale);
@@ -394,6 +439,19 @@ export class Minimap {
     g.closePath(); g.fill(); g.stroke();
     g.fillStyle = '#58d9c4';
     g.beginPath(); g.arc(X(t[0]), Y(t[1]), 3, 0, 7); g.fill();
+
+    // NORTH. The plan is drawn north-up always, so this never rotates — which
+    // is the point: it is the fixed thing the turning view is measured against.
+    g.save();
+    g.strokeStyle = 'rgba(255,255,255,.75)';
+    g.fillStyle = 'rgba(255,255,255,.9)';
+    g.lineWidth = 1.2;
+    const nx = w - 14, ny = h - 20;
+    g.beginPath(); g.moveTo(nx, ny + 9); g.lineTo(nx, ny - 6); g.stroke();
+    g.beginPath(); g.moveTo(nx, ny - 9); g.lineTo(nx - 3.2, ny - 3); g.lineTo(nx + 3.2, ny - 3); g.closePath(); g.fill();
+    g.font = 'bold 8px ui-sans-serif, system-ui, sans-serif';
+    g.fillText('N', nx - 2.8, ny + 17);
+    g.restore();
   }
 }
 
