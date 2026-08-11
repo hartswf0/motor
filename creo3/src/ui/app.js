@@ -2140,6 +2140,8 @@ addEventListener('keydown', (ev) => {
   else if (k === 'f') frameAll();
   else if (k === 'g') openFindPanel();
   else if (k === 'x') $('exploreBtn').click();
+  else if (k === '-' || k === '_') $('planOut').click();
+  else if (k === '=' || k === '+') $('planIn').click();
   // In explore mode the arrows choose the window rather than move the camera —
   // the same keys, aimed at the thing actually in front of you.
   else if (minimap?.explore && ['arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(k)) {
@@ -2383,6 +2385,20 @@ $('frameGo').onclick = async () => {
   reviewFrame();
 };
 $('frameDismiss').onclick = () => { $('frameOffer').hidden = true; detailOffer = null; };
+
+$('planOut').onclick = () => { minimap.zoom(1.6); S.dirty = true; sayPlanReach(); };
+$('planIn').onclick = () => { minimap.zoom(1 / 1.6); S.dirty = true; sayPlanReach(); };
+
+/** Say how much ground the plan is showing, and how much of it is real. */
+function sayPlanReach() {
+  const t = S.world.place.terrain;
+  if (!t) return;
+  const loaded = (t.bounds[2] - t.bounds[0]) / 1000;
+  const shown = loaded * minimap.out;
+  toast(minimap.out > 1.02
+    ? `Plan showing ${shown.toFixed(1)} km — ${loaded.toFixed(1)} km of it is ground CREO has. Beyond that is nothing yet.`
+    : `Plan showing ${loaded.toFixed(1)} km of real ground.`);
+}
 
 $('exploreBtn').onclick = async () => {
   minimap.explore = !minimap.explore;

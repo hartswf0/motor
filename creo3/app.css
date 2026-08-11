@@ -268,6 +268,13 @@ section p { margin: 0 0 10px; color: var(--dim); font-size: 13px; }
 body.subject #plan { bottom: var(--subjectH, calc(74px + var(--safe))); }
 @media (max-height: 720px) { body.subject #plan { opacity: .25; } }
 #planCanvas { width: 100%; height: 100%; display: block; cursor: crosshair; touch-action: none; }
+#planOut, #planIn {
+  position: absolute; z-index: 2; width: 26px; height: 26px; padding: 0;
+  border-radius: 8px; background: rgba(10,12,16,.8); border: 1px solid var(--edge);
+  color: var(--ink); font-size: 15px; line-height: 1; cursor: pointer;
+}
+#planOut { top: 6px; left: 6px; }
+#planIn { top: 6px; left: 38px; }
 #exploreBtn {
   position: absolute; top: 6px; right: 6px; z-index: 2;
   width: 26px; height: 26px; border-radius: 8px; padding: 0;

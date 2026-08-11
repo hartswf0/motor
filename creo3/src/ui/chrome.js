@@ -162,6 +162,38 @@ export class Minimap {
     }
   }
 
+  /**
+   * Shaded relief for the plan: height as tone, slope as light.
+   *
+   * Sampled at the PLAN's resolution rather than the ground's — about 140 cells
+   * across, whatever the ground happens to be — so this costs the same on a 900 m
+   * window as on fourteen kilometres, and a person zooming out does not pay for
+   * detail they cannot see.
+   */
+  drawRelief(g, t, X, Y, scale) {
+    const px = Math.max(1, Math.min(6, (t.bounds[2] - t.bounds[0]) * scale / 140));
+    const stepX = px / scale, stepY = px / scale;
+    if (t.__plo === undefined) {
+      const sorted = Float32Array.from(t.data).sort();
+      t.__plo = sorted[Math.floor(sorted.length * 0.02)];
+      t.__phi = sorted[Math.floor(sorted.length * 0.98)];
+    }
+    const lo = t.__plo, hi = Math.max(t.__phi, t.__plo + 1);
+    // light from the north-west, the convention every relief map uses
+    for (let y = t.bounds[1]; y < t.bounds[3]; y += stepY) {
+      for (let x = t.bounds[0]; x < t.bounds[2]; x += stepX) {
+        const h = t.heightAt(x, y);
+        const f = Math.max(0, Math.min(1, (h - lo) / (hi - lo)));
+        const dzdx = (t.heightAt(x + stepX, y) - h) / stepX;
+        const dzdy = (t.heightAt(x, y + stepY) - h) / stepY;
+        const lit = Math.max(0, Math.min(1, 0.55 + (dzdx * 22 + dzdy * 18)));
+        const v = 0.09 + f * 0.20 + lit * 0.22;
+        g.fillStyle = `rgb(${Math.round(v * 244)},${Math.round(v * 252)},${Math.round(v * 236)})`;
+        g.fillRect(X(x), Y(y + stepY), px + 1, px + 1);
+      }
+    }
+  }
+
   /** Which neighbouring window a point on the plan falls in. */
   choose(p) {
     const b = this.placeBounds;
@@ -172,6 +204,12 @@ export class Minimap {
     const j = Math.max(-1, Math.min(1, Math.round((p[1] - cy) / h)));
     this.pick = (i === 0 && j === 0) ? null : [i, j];
     this.onExplore?.('pick', this.pick);
+  }
+
+  /** Pull the plan out or in. Ground beyond what is loaded is simply absent. */
+  zoom(by) {
+    this.out = Math.max(1, Math.min(8, this.out * by));
+    return this.out;
   }
 
   /** Step the choice with the keyboard, for anyone who cannot aim a drag. */
@@ -199,7 +237,11 @@ export class Minimap {
     // on it is where anything is actually recorded.
     const pb = world.place.terrain?.bounds || world.place.bounds();
     const detail = world.place.meta?.detailBounds || null;
-    const grow = this.explore ? 1.6 : 0;
+    // How far out the plan is pulled, independent of how much ground is loaded.
+    // Past the loaded edge there is simply nothing yet — which is honest, and is
+    // the affordance for going to get some.
+    this.out = this.out || 1;
+    const grow = (this.explore ? 1.6 : 0) + (this.out - 1);
     const b = grow
       ? [pb[0] - (pb[2] - pb[0]) * grow, pb[1] - (pb[3] - pb[1]) * grow,
          pb[2] + (pb[2] - pb[0]) * grow, pb[3] + (pb[3] - pb[1]) * grow]
@@ -216,8 +258,20 @@ export class Minimap {
     const X = (x) => x * scale + ox;
     const Y = (y) => oy - y * scale;
 
-    g.fillStyle = 'rgba(255,255,255,.045)';
-    g.fillRect(X(pb[0]), Y(pb[3]), (pb[2] - pb[0]) * scale, (pb[3] - pb[1]) * scale);
+    // THE GROUND, DRAWN. Not a grey rectangle with the ground's dimensions.
+    //
+    // The plan had kilometres of real elevation available and painted it as a
+    // blank fill, because it only ever drew ENTITIES — and entities exist only
+    // inside the small window OSM was fetched for. In open country that left
+    // the one instrument meant for navigating showing nothing to navigate by.
+    //
+    // Shaded relief, from the same Ground everything else reads (I1). Cheap: it
+    // is one fill per sample, at the plan's own resolution, not the world's.
+    if (world.place.terrain) this.drawRelief(g, world.place.terrain, X, Y, scale);
+    else {
+      g.fillStyle = 'rgba(255,255,255,.045)';
+      g.fillRect(X(pb[0]), Y(pb[3]), (pb[2] - pb[0]) * scale, (pb[3] - pb[1]) * scale);
+    }
 
     const drawRing = (ring, fill, stroke) => {
       g.beginPath();
