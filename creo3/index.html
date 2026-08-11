@@ -38,6 +38,16 @@
 
 <!-- Explore controls sit OUTSIDE the plan: inside it they were clipped by its
      own overflow, and a control you cannot see is a control you do not have. -->
+<!-- Detail follows the view: shown when you have gone somewhere with nothing
+     recorded on it, and never fetching without being asked. -->
+<div id="frameOffer" hidden>
+  <span id="frameWhere"></span>
+  <div class="frameRow">
+    <button id="frameGo" class="btn primary">Read what is built here</button>
+    <button id="frameDismiss" class="tool">Not now</button>
+  </div>
+</div>
+
 <div id="exploreHint" hidden>
     <span id="exploreWhere"></span>
     <button id="exploreGo" class="btn primary" hidden></button>

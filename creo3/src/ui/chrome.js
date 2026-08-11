@@ -194,11 +194,11 @@ export class Minimap {
 
     // fit the place, keeping the aspect honest — and in explore mode, pull back
     // so there is somewhere to drag TO
-    // The WINDOW is the terrain's extent — exactly the ground that was cut from
-    // the world. Entity bounds spill past it, because a way clipped at the edge
-    // still reaches a little beyond, and stepping by that spilled figure moved
-    // the window 1012 m when it should have moved 900.
+    // The plan shows the GROUND — kilometres of it — because that is what a
+    // person navigates by where there are no landmarks. The smaller box drawn
+    // on it is where anything is actually recorded.
     const pb = world.place.terrain?.bounds || world.place.bounds();
+    const detail = world.place.meta?.detailBounds || null;
     const grow = this.explore ? 1.6 : 0;
     const b = grow
       ? [pb[0] - (pb[2] - pb[0]) * grow, pb[1] - (pb[3] - pb[1]) * grow,
@@ -272,8 +272,19 @@ export class Minimap {
       g.beginPath(); g.arc(X(c2[0]), Y(c2[1]), 5, 0, 7); g.stroke();
     }
 
+    // Where the detail ends and the bare landform begins. Drawn always, not only
+    // while exploring: outside this box the ground is real and everything on it
+    // is simply unrecorded, and that difference must never be invisible.
+    if (detail) {
+      g.save();
+      g.strokeStyle = 'rgba(255,255,255,.5)';
+      g.lineWidth = 1.25;
+      g.strokeRect(X(detail[0]), Y(detail[3]), (detail[2] - detail[0]) * scale, (detail[3] - detail[1]) * scale);
+      g.restore();
+    }
+
     // in explore mode: the eight neighbours, and which of them you already have
-    this.placeBounds = pb;
+    this.placeBounds = detail || pb;
     if (this.explore && this.preview) this.drawPreview(g, X, Y, scale, pb);
     if (this.explore) {
       const w = pb[2] - pb[0], h = pb[3] - pb[1];

@@ -479,13 +479,19 @@ canvas.addEventListener('wheel', (ev) => {
  * out in the void, and above the ground rather than inside a building.
  */
 function clampCamera() {
-  const b = S.world.place.bounds();
+  // Roam the GROUND, not the detail. The ground now runs kilometres past the
+  // window OSM was fetched for, and in country with no landmarks that landform
+  // is the only thing to navigate by — so the camera is free across all of it
+  // and the detail box is drawn on the plan rather than fencing the view.
+  const b = S.world.place.terrain?.bounds || S.world.place.bounds();
   const margin = Math.max(80, Math.hypot(b[2] - b[0], b[3] - b[1]) * 0.15);
   S.cam.target[0] = Math.max(b[0] - margin, Math.min(b[2] + margin, S.cam.target[0]));
   S.cam.target[1] = Math.max(b[1] - margin, Math.min(b[3] + margin, S.cam.target[1]));
   S.cam.target[2] = S.world.place.groundAt(S.cam.target[0], S.cam.target[1]);
   S.cam.pitch = Math.max(0.14, Math.min(1.45, S.cam.pitch));
   planDirty = true;
+  clearTimeout(clampCamera._settle);
+  clampCamera._settle = setTimeout(reviewFrame, 400);
   // never end up underground
   const e = eye();
   const floor = S.world.place.groundAt(e[0], e[1]) + 3;
@@ -2323,6 +2329,60 @@ async function exploreTo(at, metres, whereName) {
     S.busy = false;
   }
 }
+
+/**
+ * DETAIL FOLLOWS THE VIEW.
+ *
+ * The old way asked you to choose a neighbouring window from a grid of boxes
+ * and press a button — a decision about tiles, made before you could see what
+ * was in them. But you already say where you want detail simply by looking at
+ * it. The ground now runs kilometres in every direction, so roaming is free;
+ * what is expensive is what is BUILT, and that can follow the frame.
+ *
+ * It is still never automatic without warning. Fetching is a request to a public
+ * service, so this offers, once, when you have settled somewhere with nothing
+ * recorded — and then gets out of the way.
+ */
+let detailOffer = null;
+
+function outsideDetail() {
+  const d = S.world.place.meta?.detailBounds;
+  if (!d) return false;
+  const [x, y] = S.cam.target;
+  const pad = Math.max(40, S.cam.dist * 0.2);
+  return x < d[0] - pad || x > d[2] + pad || y < d[1] - pad || y > d[3] + pad;
+}
+
+function howFarOut() {
+  const d = S.world.place.meta?.detailBounds;
+  if (!d) return 0;
+  const cx = (d[0] + d[2]) / 2, cy = (d[1] + d[3]) / 2;
+  return Math.hypot(S.cam.target[0] - cx, S.cam.target[1] - cy);
+}
+
+function reviewFrame() {
+  if (S.busy || !S.world.place.meta?.detailBounds) return;
+  const out = outsideDetail();
+  const bar = $('frameOffer');
+  if (!out) { bar.hidden = true; detailOffer = null; return; }
+  const km = howFarOut() / 1000;
+  bar.hidden = false;
+  $('frameWhere').textContent = km < 1
+    ? `You are ${Math.round(km * 1000)} m past what is mapped here — the ground is real, nothing on it is recorded yet.`
+    : `You are ${km.toFixed(1)} km past what is mapped here — the ground is real, nothing on it is recorded yet.`;
+  detailOffer = [S.cam.target[0], S.cam.target[1]];
+}
+
+$('frameGo').onclick = async () => {
+  if (!detailOffer || S.busy) return;
+  const at = detailOffer.slice();
+  const d = S.world.place.meta.detailBounds;
+  const metres = Math.round(Math.max(d[2] - d[0], d[3] - d[1]));
+  $('frameWhere').textContent = 'reading what is built here…';
+  await exploreTo(at, metres, 'here');
+  reviewFrame();
+};
+$('frameDismiss').onclick = () => { $('frameOffer').hidden = true; detailOffer = null; };
 
 $('exploreBtn').onclick = async () => {
   minimap.explore = !minimap.explore;

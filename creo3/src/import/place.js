@@ -81,15 +81,40 @@ export async function importPlace(opts = {}) {
     log('nobody has mapped this yet — opening the ground alone');
   }
 
-  // 3. the ground it is built on
+  // 3. THE GROUND IS WIDER THAN THE DETAIL.
+  //
+  // A Place's extent and the extent of its CONTENTS are different things, and
+  // conflating them is what made the countryside unusable: a 900 m window with
+  // four farm tracks in it gives nothing to navigate by, and finding a site
+  // meant fetching blind tile after blind tile.
+  //
+  // Elevation is the cheap half. Measured at Watauga Lake: 900 m of ground is
+  // one tile and 325 ms; 7.2 KM IS FOUR TILES AND 540 MS — sixty-four times the
+  // area for two-thirds again the time, and it carries 505 m of relief. Landform
+  // is what you navigate by where there are no landmarks, so take a lot of it.
+  //
+  // OSM detail stays narrow, because that is the expensive half and the half
+  // that has to be asked for.
+  const GROUND_MULTIPLE = 8;
   let terrain = null;
+  const projection = makeProjection((bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2);
+  const detailBounds = localBounds(projection, bbox);
   if (opts.terrain !== false) {
-    try {
-      const projection = makeProjection((bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2);
-      terrain = await sampleTerrain(bbox, projection, localBounds(projection, bbox), { fetchImpl, log });
-      log(`terrain: ${terrain.attribution}`);
-    } catch (err) {
-      log(`terrain unavailable (${String(err.message).slice(0, 70)}) — the ground will be level`);
+    const wide = windowAround(bbox, Math.min(MAX_SPAN_M * GROUND_MULTIPLE,
+      Math.max(bboxMetres(bbox).width, bboxMetres(bbox).height) * GROUND_MULTIPLE));
+    for (const [attempt, box] of [['wide', wide], ['just the window', bbox]]) {
+      try {
+        terrain = await sampleTerrain(box, projection, localBounds(projection, box), { fetchImpl, log });
+        log(`terrain: ${terrain.attribution}`);
+        if (attempt === 'wide') {
+          const m = Math.round(bboxMetres(box).width);
+          log(`ground carried out to ${m} m so there is landform to navigate by`);
+        }
+        break;
+      } catch (err) {
+        if (attempt === 'wide') { log(`wide ground unavailable (${String(err.message).slice(0, 50)}) — trying just the window`); continue; }
+        log(`terrain unavailable (${String(err.message).slice(0, 70)}) — the ground will be level`);
+      }
     }
   }
 
@@ -97,6 +122,11 @@ export async function importPlace(opts = {}) {
   const fetchedAt = new Date().toISOString();
   const { world, stats } = osmToPlace(json, { key, name: name || key, bbox, terrain, fetchedAt, mirror });
   world.place.meta.geocoded = resolved ? { query: opts.query, match: resolved.name, osm: resolved.osm } : null;
+  // where the DETAIL is, as opposed to where the ground is. Everything outside
+  // this box is real landform with nothing built recorded on it — which is a
+  // fact about the map, and must never be shown as a fact about the place.
+  world.place.meta.detailBounds = detailBounds;
+  world.place.meta.detailBBox = bbox;
 
   // An unmapped place is still a place. Refusing to open ground because nobody
   // has drawn a building on it was the map talking, not the world: an island, a

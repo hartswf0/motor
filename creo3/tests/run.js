@@ -1714,6 +1714,39 @@ group('one ground', () => {
   });
 });
 
+// ================================================================ EXTENT ====
+// THEORY.md names this: "the region a Place covers, and separately the region
+// its contents spill into. These are different and were conflated." Conflating
+// them is what made open country unusable — a 900 m window with four farm
+// tracks in it gives nothing to navigate by.
+
+group('extent', () => {
+  test('the ground is wider than the detail, and says where the detail ends', () => {
+    const w = World.load(readFileSync(new URL('../places/watauga-lake-carter-county-united-states.json', import.meta.url), 'utf8'));
+    const g = w.place.terrain, d = w.place.meta?.detailBounds;
+    if (!g || !d) return;                       // an older fixture; nothing to check
+    const groundM = g.bounds[2] - g.bounds[0];
+    const detailM = d[2] - d[0];
+    assert(groundM > detailM * 3, `ground ${Math.round(groundM)} m is barely wider than detail ${Math.round(detailM)} m`);
+    // the detail box must sit inside the ground, or the plan lies about where things are
+    assert(d[0] >= g.bounds[0] - 1 && d[2] <= g.bounds[2] + 1, 'the detail box is outside the ground');
+    console.log(`      (${(groundM / 1000).toFixed(1)} km of ground around a ${Math.round(detailM)} m window — ${Math.round(groundM / detailM)}×)`);
+  });
+
+  test('ground outside the detail is real, and has nothing recorded on it', () => {
+    const w = World.load(readFileSync(new URL('../places/watauga-lake-carter-county-united-states.json', import.meta.url), 'utf8'));
+    const g = w.place.terrain, d = w.place.meta?.detailBounds;
+    if (!g || !d) return;
+    // a point well outside the detail box still has ground under it
+    const out = [g.bounds[0] + (d[0] - g.bounds[0]) * 0.3, g.bounds[1] + (d[1] - g.bounds[1]) * 0.3];
+    const z = w.place.groundAt(out[0], out[1]);
+    assert(Number.isFinite(z), 'there is no ground outside the detail window');
+    // and nothing is recorded there — which is a fact about the map, not the place
+    const near = w.nearby(out, 200);
+    eq(near.length, 0, 'something was recorded outside the window it was fetched for');
+  });
+});
+
 // ============================================================== THE LOOP ====
 // One shot at a paragraph of context is not how anyone decides anything about a
 // place. The assistant now asks the world questions and the world answers with

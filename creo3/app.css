@@ -393,3 +393,15 @@ body.subject #plan { bottom: var(--subjectH, calc(74px + var(--safe))); }
 
 /* A drop target has to say it is one, or nobody tries. */
 #sayWrap.dropping { outline: 2px dashed var(--accent); outline-offset: 3px; border-radius: 999px; }
+
+/* The offer to load detail where you are looking. Sits above the say bar,
+   because it is about where you are, not about the plan. */
+#frameOffer {
+  position: fixed; left: 12px; bottom: calc(84px + var(--safe)); z-index: 12;
+  width: min(360px, calc(100vw - 24px));
+  background: var(--panel); border: 1px solid var(--edge); border-radius: 12px;
+  padding: 10px 12px; display: grid; gap: 8px; backdrop-filter: blur(14px);
+  font-size: 12.5px; line-height: 1.45; color: var(--ink);
+}
+.frameRow { display: flex; gap: 8px; }
+.frameRow .btn, .frameRow .tool { padding: 6px 10px; font-size: 12px; border-radius: 8px; }
