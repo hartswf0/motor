@@ -1298,6 +1298,36 @@ group('bodies', () => {
   const glbPath = new URL('./fixtures-house.glb', import.meta.url);
   const hasGLB = existsSync(glbPath);
 
+  // A hillside built here rather than downloaded. These tests were written
+  // against an imported place and passed locally while failing in CI, because
+  // imported places are deliberately not in the repo. A test about the SHAPE OF
+  // GROUND should make its own ground: 30 m of fall across 300 m, with a fold
+  // in it so orientation has something to matter about.
+  function hillside({ cell = 3, size = 300, fall = 30 } = {}) {
+    const w = buildPlace('settlement');
+    const Heightfield = Object.getPrototypeOf(w.place).constructor === Object
+      ? null : (w.place.terrain?.constructor || null);
+    const bounds = [-size / 2, -size / 2, size / 2, size / 2];
+    const HF = Heightfield || heightfieldCtor();
+    const t = new HF(bounds, cell);
+    for (let j = 0; j < t.ny; j++) {
+      for (let i = 0; i < t.nx; i++) {
+        const x = bounds[0] + i * cell, y = bounds[1] + j * cell;
+        // a slope running east, folded into a shallow valley running north
+        t.data[j * t.nx + i] = 100
+          + (x / size) * fall
+          + Math.cos((y / size) * Math.PI * 2) * (fall * 0.18);
+      }
+    }
+    w.place.terrain = t;
+    return w;
+  }
+  function heightfieldCtor() {
+    const probe = buildPlace('settlement');
+    if (probe.place.terrain) return probe.place.terrain.constructor;
+    throw new Error('no Heightfield to build a hillside with');
+  }
+
   test('a .glb is read into a contract, without a library', () => {
     if (!hasGLB) return;
     const buf = readFileSync(glbPath);
@@ -1323,9 +1353,9 @@ group('bodies', () => {
   test('ground too coarse to hold a building is refined until it can', () => {
     // A 29 m elevation cell cannot express a 12 m house: seating one changed a
     // single sample, so the earthwork was computed and had nowhere to go.
-    const w = World.load(readFileSync(new URL('../places/ravello-ravello-italia.json', import.meta.url), 'utf8'));
+    const w = hillside({ cell: 30 });
     const coarse = w.place.terrain.cell;
-    assert(coarse > 20, `fixture should have a coarse DEM, has ${coarse.toFixed(1)} m`);
+    assert(coarse > 20, `this test needs a coarse DEM, has ${coarse.toFixed(1)} m`);
     const r = refineTerrain(w.place, 3);
     assert(r.refined, 'refusing to refine leaves buildings unrecordable');
     assert(w.place.terrain.cell <= 3.1, `still ${w.place.terrain.cell} m`);
@@ -1336,20 +1366,11 @@ group('bodies', () => {
   });
 
   test('seating a building cuts and fills the ground, and can be undone', () => {
-    const w = World.load(readFileSync(new URL('../places/ravello-ravello-italia.json', import.meta.url), 'utf8'));
-    refineTerrain(w.place, 3);
+    const w = hillside({ cell: 3 });
     const body = boxBody({ width: 12, depth: 8, height: 3.2, name: 'House' });
-    // somewhere with real fall
-    const t = w.place.terrain;
-    let at = null, fall = 0;
-    for (let j = 20; j < t.ny - 20; j += 8) {
-      for (let i = 20; i < t.nx - 20; i += 8) {
-        const x = t.bounds[0] + i * t.cell, y = t.bounds[1] + j * t.cell;
-        const sp = G.groundSpan(G.circleRing(x, y, 10, 12), (a, b) => w.place.groundAt(a, b), 5);
-        if (sp && sp.hi - sp.lo > fall) { fall = sp.hi - sp.lo; at = [x, y]; }
-      }
-    }
-    assert(fall > 5, `no steep ground found in the fixture (best ${fall.toFixed(1)} m)`);
+    const at = [0, 0];
+    const fall = G.groundSpan(G.circleRing(0, 0, 10, 12), (a, b) => w.place.groundAt(a, b), 5);
+    assert(fall.hi - fall.lo > 1, `the test hillside is flat (${(fall.hi - fall.lo).toFixed(1)} m)`);
 
     const cutSeat = planSeat(w, body, at, { level: 'cut' });
     const fillSeat = planSeat(w, body, at, { level: 'fill' });
@@ -1364,7 +1385,14 @@ group('bodies', () => {
     // the ground actually changes, and the pad is level under the house
     const cornersBefore = balanced.ring.map((p) => w.place.groundAt(p[0], p[1]));
     const undo = settleGround(w, balanced);
-    assert(undo.changed > 50, `only ${undo.changed} samples changed — the ground cannot hold a building`);
+    // The principled threshold is not a round number: the ground must be able
+    // to record AT LEAST the pad. Anything less and the earthwork was computed
+    // and thrown away, which is exactly what a 30 m cell did.
+    const cell = w.place.terrain.cell;
+    const recorded = undo.changed * cell * cell;
+    const padArea = Math.abs(G.area(balanced.pad));
+    assert(recorded >= padArea * 0.6,
+      `only ${Math.round(recorded)} m² of ground could change for a ${Math.round(padArea)} m² pad`);
     const cornersAfter = balanced.ring.map((p) => w.place.groundAt(p[0], p[1]));
     for (const z of cornersAfter) {
       assert(Math.abs(z - balanced.floor) < 0.6, `corner at ${z.toFixed(1)} is not on the floor ${balanced.floor.toFixed(1)}`);
@@ -1380,12 +1408,9 @@ group('bodies', () => {
   test('turning a house along the contour is measurably cheaper', () => {
     // The Henry House is sited "along the contour rather than across it". That
     // is not a style: it is an earthwork claim, and a place model can check it.
-    const w = World.load(readFileSync(new URL('../places/ravello-ravello-italia.json', import.meta.url), 'utf8'));
-    refineTerrain(w.place, 3);
-    const body = boxBody({ width: 14, depth: 7, height: 3.2, name: 'House' });
-    const t = w.place.terrain;
-    const at = [t.bounds[0] + (t.bounds[2] - t.bounds[0]) * 0.5,
-      t.bounds[1] + (t.bounds[3] - t.bounds[1]) * 0.5];
+    const w = hillside({ cell: 3 });
+    const body = boxBody({ width: 20, depth: 6, height: 3.2, name: 'House' });
+    const at = [0, 0];
     let best = null, worstEarth = 0;
     for (let deg = 0; deg < 180; deg += 15) {
       const s = planSeat(w, body, at, { level: 'balanced', rotation: (deg * Math.PI) / 180 });
