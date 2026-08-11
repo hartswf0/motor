@@ -2418,8 +2418,12 @@ function updateOrientation() {
 
   const p = S.pointer || [S.cam.target[0], S.cam.target[1]];
   const ll = toLatLon(p[0], p[1]);
+  // Four decimals is eleven metres, which is enough to know where you are and
+  // not enough to push undo off a 375-pixel screen. The full six are still what
+  // gets copied — precision belongs in what you send, not in what you glance at.
+  const dp = innerWidth < 640 ? 4 : 5;
   $('whereLatLon').textContent = ll
-    ? `${Math.abs(ll[0]).toFixed(5)}°${ll[0] < 0 ? 'S' : 'N'}  ${Math.abs(ll[1]).toFixed(5)}°${ll[1] < 0 ? 'W' : 'E'}`
+    ? `${Math.abs(ll[0]).toFixed(dp)}°${ll[0] < 0 ? 'S' : 'N'} ${Math.abs(ll[1]).toFixed(dp)}°${ll[1] < 0 ? 'W' : 'E'}`
     : `${Math.round(p[0])}, ${Math.round(p[1])} m`;
   const z = S.world.place.groundAt(p[0], p[1]);
   const prov = S.world.place.terrain?.provenanceAt?.(p[0], p[1]);
@@ -2438,12 +2442,30 @@ $('whereAmI').onclick = async () => {
 
 // invalidate({plan}) — NOT S.dirty. The plan redraws only when planDirty is
 // set, so zooming it set a flag nobody was reading and the buttons did nothing.
+/**
+ * More than two lights.
+ *
+ * Night is right in a lit room; daylight is right outdoors and on paper. But a
+ * palette is also an argument about what matters — ink says read the lines, and
+ * a muted one says look at the land — so this is a short list rather than a
+ * switch, and it cycles.
+ */
+const THEMES = [
+  { key: 'dark', label: 'Night' },
+  { key: 'light', label: 'Daylight' },
+  { key: 'paper', label: 'Paper' },
+];
+
+$('attribution').onclick = () => $('attribution').classList.toggle('open');
+
 /** Daylight or night, for the page and the world at once. */
 function applyTheme(name) {
   const t = setTheme(name);
-  document.body.classList.toggle('day', t === 'light');
+  document.body.classList.toggle('day', t !== 'dark');
+  document.body.classList.toggle('paper', t === 'paper');
   localStorage.setItem('creo.theme', t);
-  $('themeChip').textContent = t === 'light' ? '◑' : '◐';
+  $('themeChip').textContent = t === 'dark' ? '◐' : t === 'light' ? '◑' : '◉';
+  $('themeChip').title = `${THEMES.find((x) => x.key === t)?.label || t} — tap for the next (T)`;
   // colours are baked into the vertex buffers at build time, and S.dirty makes
   // the frame loop rebuild them — no separate call, and no call to a method
   // that does not exist
@@ -2452,8 +2474,10 @@ function applyTheme(name) {
   return t;
 }
 $('themeChip').onclick = () => {
-  const now = applyTheme(document.body.classList.contains('day') ? 'dark' : 'light');
-  toast(now === 'light' ? 'Daylight.' : 'Night.');
+  const now = localStorage.getItem('creo.theme') || 'dark';
+  const next = THEMES[(THEMES.findIndex((t) => t.key === now) + 1) % THEMES.length];
+  applyTheme(next.key);
+  toast(next.label);
 };
 
 $('planOut').onclick = () => { minimap.zoom(1.6); invalidate({ plan: true }); sayPlanReach(); };

@@ -1,5 +1,6 @@
 /* The world is primary. Chrome appears only when it has something to say. */
 :root {
+  --lift: 0 2px 10px rgba(0,0,0,.35);
   --ink: #eef1f4;
   --dim: #97a1ab;
   --panel: rgba(16, 19, 24, 0.92);
@@ -48,6 +49,10 @@ html, body {
 .icon {
   width: 38px; height: 38px; border-radius: 50%;
   background: var(--panel); border: 1px solid var(--edge); color: var(--ink);
+  /* A control has to be legible against whatever is behind it, and in daylight
+     what is behind it is bright ground. A translucent white pill on a white
+     hillside is not a control, it is a rumour. */
+  box-shadow: var(--lift);
   font-size: 17px; line-height: 1; cursor: pointer;
   display: inline-flex; align-items: center; justify-content: center;
 }
@@ -202,7 +207,8 @@ section p { margin: 0 0 10px; color: var(--dim); font-size: 13px; }
 }
 #modeChip {
   flex: none; height: 34px; padding: 0 12px; border-radius: 999px; cursor: pointer;
-  background: rgba(255,255,255,.07); border: 1px solid var(--edge); color: var(--dim);
+  /* a tint of the ink, so it holds in any palette rather than only on black */
+  background: color-mix(in srgb, var(--ink) 8%, transparent); border: 1px solid var(--edge); color: var(--dim);
   font: inherit; font-size: 12.5px; white-space: nowrap;
 }
 #modeChip.set { color: var(--accent); border-color: rgba(88,217,196,.5); }
@@ -242,11 +248,19 @@ section p { margin: 0 0 10px; color: var(--dim); font-size: 13px; }
 /* Under the place chip, where nothing else ever sits — the licence has to be
    visible without fighting the tool row for space. */
 #attribution {
-  position: fixed; left: 12px; top: calc(env(safe-area-inset-top, 0px) + 56px); z-index: 4;
-  max-width: min(78vw, 420px); font-size: 10.5px; line-height: 1.35; color: var(--dim);
-  background: rgba(12,14,18,.66); border: 1px solid var(--edge); border-radius: 8px;
-  padding: 4px 8px; pointer-events: none;
+  /* Credit is owed and must be reachable, but a four-line grey slab pinned over
+     the world reads as something you want to peel off. Folded to a mark; the
+     whole sentence is one tap away and one tap back. */
+  position: fixed; left: 12px; top: calc(52px + var(--safe)); z-index: 6;
+  max-width: 34px; overflow: hidden; white-space: nowrap; text-overflow: clip;
+  font-size: 11px; line-height: 1.45; color: var(--dim); text-align: left;
+  background: var(--panel); border: 1px solid var(--edge); border-radius: 9px;
+  padding: 5px 8px; cursor: pointer; box-shadow: var(--lift);
+  transition: max-width .18s ease, white-space 0s;
 }
+#attribution::before { content: 'ⓘ'; margin-right: 6px; opacity: .8; }
+#attribution.open { max-width: min(420px, calc(100vw - 24px)); white-space: normal; }
+
 
 /* --------------------------------------------------------- view controls */
 #viewTools {
@@ -391,7 +405,12 @@ body.subject #plan { bottom: var(--subjectH, calc(74px + var(--safe))); }
     -webkit-backdrop-filter: none !important;
     backdrop-filter: none !important;
   }
-  #tools, section, #sayInput, #say .icon, .menu { background: rgba(16, 19, 24, .97); }
+  /* var(--panel), NOT a literal. This hardcoded dark was written when there was
+     only one palette, and it quietly outranked the theme: in daylight it made
+     every say-bar button a black disc with black glyphs on it. A second place
+     that decides a colour is the same fault as a second place that decides a
+     height. */
+  #tools, section, #sayInput, #say .icon, .menu { background: var(--panel); }
   .helpOverlay { background: rgba(6, 8, 11, .94); }
 }
 
@@ -404,9 +423,11 @@ body.subject #plan { bottom: var(--subjectH, calc(74px + var(--safe))); }
 /* The offer to load detail where you are looking. Sits above the say bar,
    because it is about where you are, not about the plan. */
 #frameOffer {
-  /* above the compass, which is permanent and must not be covered by something
-     transient — knowing which way you are facing outranks an offer */
-  position: fixed; left: 12px; bottom: calc(84px + var(--safe) + 58px); z-index: 12;
+  /* An offer must not sit on top of the instrument you would use to judge it.
+     Kept clear of the plan on every width, because covering the map to ask
+     whether you want more map is absurd. */
+  position: fixed; left: 12px; right: calc(24px + 200px); bottom: calc(84px + var(--safe)); z-index: 12;
+  max-width: 380px;
   width: min(360px, calc(100vw - 24px));
   background: var(--panel); border: 1px solid var(--edge); border-radius: 12px;
   padding: 10px 12px; display: grid; gap: 8px; backdrop-filter: blur(14px);
@@ -422,6 +443,7 @@ body.subject #plan { bottom: var(--subjectH, calc(74px + var(--safe))); }
    for a lit room and wrong outdoors, on a phone, or when the subject is the
    shape of land — which people have read off white paper for two centuries. */
 body.day {
+  --lift: 0 1px 3px rgba(20,22,26,.16), 0 0 0 .5px rgba(20,22,26,.08);
   --bg: #eceae5;
   --panel: rgba(252,251,249,.92);
   --edge: rgba(20,22,26,.16);
@@ -444,6 +466,10 @@ body.day .toast { background: rgba(28,30,34,.94); color: #f4f3f0; }
 #top .where .sub { color: var(--dim); font-size: 10.5px; }
 #compassRose { flex: none; transform-origin: 50% 50%; }
 #top .chip.icon { padding: 0; width: 30px; justify-content: center; }
+/* Pills at 999px lose their ends to the curve; at 10px the same words fit in
+   noticeably less width, which is the whole argument on a phone. */
+#top .chip { border-radius: 10px; padding: 5px 9px; }
+#top { gap: 6px; }
 
 /* MOBILE: fewer things, bigger. A phone has no room for six small islands, so
    the secondary chips step back and what remains is what you touch. */
@@ -454,5 +480,32 @@ body.day .toast { background: rgba(28,30,34,.94); color: #f4f3f0; }
   #plan { width: 132px; height: 132px; }
   #plan.exploring { width: min(78vw, 320px); height: min(78vw, 320px); }
   #planOut, #planIn, #exploreBtn { width: 32px; height: 32px; font-size: 17px; }
-  #frameOffer { left: 8px; right: 8px; width: auto; bottom: calc(84px + var(--safe)); }
+  /* on a phone there is no room beside the plan, so the offer goes above it */
+  #frameOffer { left: 8px; right: 8px; width: auto; max-width: none;
+    bottom: calc(84px + var(--safe) + 140px); }
+}
+
+/* Paper: the page recedes so the drawing is the only thing with weight. */
+body.paper {
+  --bg: #f6f5f2;
+  --panel: rgba(255,255,255,.94);
+  --edge: rgba(20,22,26,.20);
+  --ink: #101215;
+  --dim: #575b62;
+  --accent: #12564c;
+}
+
+/* Chips hold a phrase, not a paragraph. Left to wrap, "Watauga Lake" and "add
+   your name" each became two lines and the header grew to four rows on a phone. */
+#top .chip { white-space: nowrap; }
+#placeName { max-width: 28vw; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 640px) {
+  /* The header holds what you cannot work without: where you are, where you
+     are looking, and the ability to take back what you just did. Everything
+     else is reachable elsewhere and steps aside. */
+  #authorChip { max-width: 64px; overflow: hidden; text-overflow: ellipsis; }
+  #placeName { max-width: 20vw; }
+  #top .chip { padding: 5px 7px; font-size: 12px; }
+  #top .icon { width: 32px; height: 32px; }
+  #whereAmI { font-size: 10.5px; }
 }

@@ -124,11 +124,33 @@ const LIGHT = {
 /** The palette in force. Mutated in place so every module keeps its reference. */
 export const PALETTE = { ...DARK };
 
+/**
+ * PAPER — the survey drawing. Land almost colourless so that the LINES carry
+ * everything: contours, water, the edges of things. For reading a place rather
+ * than picturing it.
+ */
+const PAPER = {
+  ...LIGHT,
+  sky: [0.97, 0.97, 0.96],
+  ground: [0.955, 0.95, 0.935],
+  groundHigh: [0.985, 0.98, 0.97],
+  structure: [0.86, 0.845, 0.82],
+  road: [0.80, 0.79, 0.77],
+  path: [0.87, 0.86, 0.83],
+  water: [0.62, 0.76, 0.85],
+  waterEdge: [0.13, 0.38, 0.60],
+  tree: [0.62, 0.71, 0.58],
+  contour: [0.36, 0.30, 0.20],
+  contourIndex: [0.30, 0.18, 0.05],
+};
+
+const BY_NAME = { dark: DARK, light: LIGHT, paper: PAPER };
+
 export function setTheme(name) {
-  const next = name === 'light' ? LIGHT : DARK;
+  const next = BY_NAME[name] || DARK;
   for (const k of Object.keys(PALETTE)) delete PALETTE[k];
   Object.assign(PALETTE, next);
-  return name === 'light' ? 'light' : 'dark';
+  return BY_NAME[name] ? name : 'dark';
 }
 
 
