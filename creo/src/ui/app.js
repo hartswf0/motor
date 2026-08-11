@@ -8,7 +8,8 @@
 import * as G from '../core/geom.js';
 import { buildPlace, PLACES } from '../places/index.js';
 import { listImported, loadImported, attribution } from '../places/imported.js';
-import { openImportPanel, openReframePanel, listCached, loadCached } from './importui.js';
+import { openImportPanel, openReframePanel, reframe, cachePut, listCached, loadCached } from './importui.js';
+import { importPlace } from '../import/place.js';
 import { proposeOperations, critique, hasKey, getConfig, setConfig, listModels, EFFORTS, lastCalls } from '../ai/operator.js';
 import { MODES, MODE_ORDER, routeMode, STEP_LABELS } from '../ai/modes.js';
 import { investigate, summarise } from '../ai/investigate.js';
@@ -1868,6 +1869,7 @@ addEventListener('keydown', (ev) => {
   else if (k === 'l') { S.labels = S.labels === false; S.dirty = true; toast(S.labels === false ? 'Names hidden.' : 'Names shown.'); }
   else if (k === 'f') frameAll();
   else if (k === 'g') openFindPanel();
+  else if (k === 'x') $('exploreBtn').click();
   else if (k === 'm') $('planBtn').click();
   else if (k === '?' || (k === '/' && ev.shiftKey)) { ev.preventDefault(); openHelp(); }
   else if (k === 'n') openNote();
@@ -1925,7 +1927,72 @@ minimap = new Minimap($('planCanvas'), {
     S.cam.target = [p[0], p[1], S.world.place.groundAt(p[0], p[1])];
     clampCamera();
   },
+  // Dragging the window is a request for ground that is not here yet, so it
+  // asks before it fetches: a real request to a public service, and a place a
+  // person may not have meant to leave.
+  onExplore: (phase, at) => {
+    S.dirty = true;
+    if (phase === 'move') {
+      const off = Math.hypot(at[0], at[1]);
+      $('exploreHint').hidden = false;
+      $('exploreHint').textContent = `${Math.round(off)} m from here — let go to fetch this ground`;
+      return;
+    }
+    const across = placeWidth();
+    $('exploreHint').textContent = 'fetching…';
+    exploreTo(at, across);
+  },
 });
+
+/** How wide the loaded window is, in metres, from the corner of the world it remembers. */
+function placeWidth() {
+  const b = S.world.place.meta?.bbox;
+  return b ? Math.round((b[2] - b[0]) * 111320) : 900;
+}
+
+async function exploreTo(at, metres) {
+  if (S.busy) return;
+  S.busy = true;
+  try {
+    const { bbox } = reframe(S.world, { at, metres });
+    const base = (S.world.place.name || 'here').split(' · ')[0].split(' — ')[0];
+    const north = at[1] >= 0 ? 'N' : 'S';
+    const east = at[0] >= 0 ? 'E' : 'W';
+    const label = `${base} · ${Math.round(Math.hypot(at[0], at[1]))} m ${north}${east}`;
+    const { world, key, name, stats } = await importPlace({
+      bbox, name: label, metres,
+      log: (m) => { $('exploreHint').textContent = String(m).slice(0, 60); },
+    });
+    await cachePut(key, {
+      payload: world.save(),
+      meta: {
+        key, name, counts: stats,
+        relief: world.place.meta?.relief || 0,
+        bbox: world.place.meta?.bbox,
+        fetchedAt: world.place.meta?.fetchedAt,
+        source: 'OpenStreetMap (ODbL)',
+      },
+    });
+    adoptWorld(world, key, name);
+    minimap.proposed = null;
+    $('exploreHint').hidden = true;
+    toast(`Moved ${Math.round(Math.hypot(at[0], at[1]))} m — ${stats.buildings || 0} buildings, ${world.place.meta?.relief || 0} m relief.`);
+  } catch (err) {
+    $('exploreHint').textContent = String(err.message).slice(0, 70);
+    reportFailure('Could not fetch that ground', err);
+  } finally {
+    S.busy = false;
+  }
+}
+
+$('exploreBtn').onclick = () => {
+  minimap.explore = !minimap.explore;
+  minimap.proposed = null;
+  $('exploreBtn').classList.toggle('on', minimap.explore);
+  $('exploreHint').hidden = !minimap.explore;
+  if (minimap.explore) $('exploreHint').textContent = 'drag the box to ground you have not loaded';
+  S.dirty = true;
+};
 $('plan').hidden = false;
 $('planBtn').classList.add('on');
 

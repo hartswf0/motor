@@ -75,10 +75,19 @@ export function openLayers({ anchorEl, off, onChange, labelsOn, onLabels }) {
  * and tap to go.
  */
 export class Minimap {
-  constructor(canvas, { onGo }) {
+  constructor(canvas, { onGo, onExplore = null }) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
     this.onGo = onGo;
+    // EXPLORE: the plan stops being a picture of what is loaded and becomes a
+    // way of asking for what is not. It zooms out past the edge of the imported
+    // ground, draws that ground as a lit rectangle in a dark surround, and lets
+    // the window itself be dragged somewhere new — because "what is over there"
+    // is the question a plan makes you want to ask, and until now the plan could
+    // only answer with the edge of the tile.
+    this.onExplore = onExplore;
+    this.explore = false;
+    this.proposed = null;      // [x, y] in the place's own metres
     this.bounds = null;
     this.dragging = false;
 
@@ -92,14 +101,25 @@ export class Minimap {
     };
     canvas.addEventListener('pointerdown', (ev) => {
       this.dragging = true;
-      canvas.setPointerCapture(ev.pointerId);
-      const p = toWorld(ev); if (p) onGo(p);
+      // a pointer that is not active cannot be captured, and failing to capture
+      // is not a reason to drop the gesture
+      try { canvas.setPointerCapture(ev.pointerId); } catch { /* fine */ }
+      const p = toWorld(ev);
+      if (!p) return;
+      if (this.explore) { this.proposed = p; this.onExplore?.('move', p); }
+      else onGo(p);
     });
     canvas.addEventListener('pointermove', (ev) => {
       if (!this.dragging) return;
-      const p = toWorld(ev); if (p) onGo(p);
+      const p = toWorld(ev);
+      if (!p) return;
+      if (this.explore) { this.proposed = p; this.onExplore?.('move', p); }
+      else onGo(p);
     });
-    canvas.addEventListener('pointerup', () => { this.dragging = false; });
+    canvas.addEventListener('pointerup', () => {
+      this.dragging = false;
+      if (this.explore && this.proposed) this.onExplore?.('settle', this.proposed);
+    });
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
   }
 
@@ -112,8 +132,14 @@ export class Minimap {
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
     g.clearRect(0, 0, w, h);
 
-    // fit the place, keeping the aspect honest
-    const b = world.place.bounds();
+    // fit the place, keeping the aspect honest — and in explore mode, pull back
+    // so there is somewhere to drag TO
+    const pb = world.place.bounds();
+    const grow = this.explore ? 1.6 : 0;
+    const b = grow
+      ? [pb[0] - (pb[2] - pb[0]) * grow, pb[1] - (pb[3] - pb[1]) * grow,
+         pb[2] + (pb[2] - pb[0]) * grow, pb[3] + (pb[3] - pb[1]) * grow]
+      : pb;
     const bw = b[2] - b[0], bh = b[3] - b[1];
     const pad = 6;
     const scale = Math.min((w - pad * 2) / Math.max(1, bw), (h - pad * 2) / Math.max(1, bh));
@@ -127,7 +153,7 @@ export class Minimap {
     const Y = (y) => oy - y * scale;
 
     g.fillStyle = 'rgba(255,255,255,.045)';
-    g.fillRect(X(b[0]), Y(b[3]), bw * scale, bh * scale);
+    g.fillRect(X(pb[0]), Y(pb[3]), (pb[2] - pb[0]) * scale, (pb[3] - pb[1]) * scale);
 
     const drawRing = (ring, fill, stroke) => {
       g.beginPath();
@@ -180,6 +206,25 @@ export class Minimap {
       const c2 = G.centroid(ring);
       g.strokeStyle = '#ffe98c'; g.lineWidth = 1.5;
       g.beginPath(); g.arc(X(c2[0]), Y(c2[1]), 5, 0, 7); g.stroke();
+    }
+
+    // in explore mode: what is loaded, and where you are proposing to go
+    if (this.explore) {
+      g.save();
+      g.strokeStyle = 'rgba(255,255,255,.35)';
+      g.setLineDash([3, 3]);
+      g.lineWidth = 1;
+      g.strokeRect(X(pb[0]), Y(pb[3]), (pb[2] - pb[0]) * scale, (pb[3] - pb[1]) * scale);
+      g.restore();
+      if (this.proposed) {
+        const w2 = (pb[2] - pb[0]) / 2, h2 = (pb[3] - pb[1]) / 2;
+        const p = this.proposed;
+        g.fillStyle = 'rgba(88,217,196,.14)';
+        g.strokeStyle = '#58d9c4';
+        g.lineWidth = 1.5;
+        g.fillRect(X(p[0] - w2), Y(p[1] + h2), w2 * 2 * scale, h2 * 2 * scale);
+        g.strokeRect(X(p[0] - w2), Y(p[1] + h2), w2 * 2 * scale, h2 * 2 * scale);
+      }
     }
 
     // you are here, looking that way

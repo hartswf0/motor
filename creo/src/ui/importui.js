@@ -181,7 +181,7 @@ const escapeHTML = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '
  * larger window cut around THAT. Nothing is guessed: the same import runs
  * again, on real ground, from the point you were actually looking at.
  */
-export function reframe(world, { camera, metres, log = () => {} }) {
+export function reframe(world, { camera, at = null, metres, log = () => {} }) {
   const bbox = world.place.meta?.bbox;
   if (!bbox) throw new Error('this place does not remember where in the world it is');
   const [south, west, north, east] = bbox;
@@ -190,8 +190,13 @@ export function reframe(world, { camera, metres, log = () => {} }) {
   // the local grid is metres east and north of the window's centre
   const b = world.place.terrain?.bounds || world.place.bounds();
   const cx = (b[0] + b[2]) / 2, cy = (b[1] + b[3]) / 2;
-  const dx = (camera?.target?.[0] ?? cx) - cx;
-  const dy = (camera?.target?.[1] ?? cy) - cy;
+  // `at` is an explicit point in the place's own metres — what the minimap
+  // hands over when someone drags the window somewhere new. Otherwise it is
+  // wherever the camera is looking.
+  const px = at ? at[0] : (camera?.target?.[0] ?? cx);
+  const py = at ? at[1] : (camera?.target?.[1] ?? cy);
+  const dx = px - cx;
+  const dy = py - cy;
 
   const lat = (south + north) / 2 + dy / 111320;
   const lon = (west + east) / 2 + dx / (111320 * Math.max(0.05, Math.cos((midLat * Math.PI) / 180)));

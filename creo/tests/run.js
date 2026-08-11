@@ -1456,7 +1456,8 @@ group('references', () => {
       }
     }
     // class and object methods:  name(...) {
-    add(/^\s*(?:static\s+)?(?:async\s+)?\*?\s*([A-Za-z_$][\w$]*)\s*\([^;=]*\)\s*\{/gm);
+    // a parameter list may hold defaults, so `=` cannot be the terminator here
+    add(/^\s*(?:static\s+)?(?:async\s+)?\*?\s*([A-Za-z_$][\w$]*)\s*\([^;]*\)\s*\{/gm);
     // destructured bindings
     for (const m of src.matchAll(/(?:const|let|var)\s*[[{]([^\]}]*)[\]}]/g)) {
       for (const n of m[1].matchAll(/([A-Za-z_$][\w$]*)/g)) d.add(n[1]);
@@ -1553,6 +1554,24 @@ group('references', () => {
     // and a refusal that names nothing must not be silently swallowed
     eq(repairFor(JSON.stringify({ error: { message: 'You exceeded your quota.' } }), {}), null,
       'a quota error is not a parameter to drop');
+  });
+
+  // Every $('id') the interface reaches for must exist in the page. A silent
+  // no-op edit left the explore button out of index.html while app.js still
+  // wired it, and the ReferenceError took the whole boot down — the same shape
+  // as captureView, arriving by a different route. Text-substitution edits fail
+  // quietly; this makes the result loud.
+  test('every element the interface reaches for exists in the page', () => {
+    const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+    const present = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]));
+    const missing = new Set();
+    for (const file of ['src/ui/app.js']) {
+      const src = readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
+      for (const m of src.matchAll(/\$\('([A-Za-z][\w-]*)'\)/g)) {
+        if (!present.has(m[1])) missing.add(m[1]);
+      }
+    }
+    eq([...missing].sort().join(', '), '', 'the page has no such element');
   });
 
   // and the ranking the interface promises
