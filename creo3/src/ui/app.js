@@ -1286,6 +1286,36 @@ function subjectFacts() {
   }
   const e = ids.length === 1 && S.world.get(ids[0]);
   if (!e) return [`${ids.length} things chosen`];
+
+  // A PARCEL IS A RECORD, NOT A SHAPE.
+  //
+  // Selecting the site said "120104 m², 0.0 m tall" — the dimensions of a
+  // polygon, when what a person needs is the property: who owns it, what the
+  // deed says, how much it disagrees with the drawn boundary, and how the land
+  // lies. The record was on the entity the whole time and nothing showed it.
+  if (e.type === 'parcel') {
+    const p = e.props || {};
+    const ring = S.world.ringOf(e);
+    const span = ring && G.groundSpan(ring, (x, y) => S.world.place.groundAt(x, y), 12);
+    const out = [];
+    if (p.owner) out.push(p.owner);
+    if (p.deedAcres) {
+      out.push(`${p.deedAcres} acres on the deed`
+        + (p.drawnAcres ? `, ${p.drawnAcres} as drawn (${p.disagreementPercent > 0 ? '+' : ''}${p.disagreementPercent}%)` : ''));
+    }
+    if (p.address) out.push(p.address);
+    if (p.parcelId) out.push(`parcel ${p.parcelId.trim()}`);
+    if (span) {
+      out.push(`ground ${span.lo.toFixed(0)}–${span.hi.toFixed(0)} m, falling ${(span.hi - span.lo).toFixed(0)} m across it`);
+    }
+    // what is on it and what reaches it — the two facts a site turns on
+    const inside = ring ? entitiesInside(ring).filter((x) => x.id !== e.id) : [];
+    out.push(inside.length
+      ? `on it: ${[...new Set(inside.map((x) => x.name || x.use || x.type))].slice(0, 5).join(', ')}`
+      : 'nothing recorded on it');
+    out.push('boundary from the county — not a survey');
+    return out;
+  }
   const ring = S.world.ringOf(e);
   if (ring) {
     const { height, fall } = heightOf(e);

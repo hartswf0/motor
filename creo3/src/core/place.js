@@ -402,9 +402,52 @@ export class Heightfield {
       restore: () => { for (const [k, z, p] of before) { this.data[k] = z; this.prov[k] = p; } this.__lo = undefined; } };
   }
 
-  toJSON() { return { bounds: this.bounds, cell: this.cell, data: [...this.data], prov: [...this.prov] }; }
+  /**
+   * Heights are numbers, not prose.
+   *
+   * Written as a JSON array, 133,225 samples became 2.4 MB of decimal text —
+   * three megabytes to download before a site would open, for data that is
+   * 533 KB of Float32. They are stored as bytes now and the file is a quarter
+   * of the size. The old array form is still read, because places saved before
+   * this exist and should not become unopenable.
+   */
+  toJSON() {
+    return {
+      bounds: this.bounds, cell: this.cell,
+      f32: b64FromBytes(new Uint8Array(this.data.buffer, this.data.byteOffset, this.data.byteLength)),
+      p8: b64FromBytes(this.prov),
+    };
+  }
+
   static fromJSON(j) {
+    if (j.f32) {
+      const bytes = bytesFromB64(j.f32);
+      const data = new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);
+      return new Heightfield(j.bounds, j.cell, data, j.p8 ? bytesFromB64(j.p8) : null);
+    }
     return new Heightfield(j.bounds, j.cell, Float32Array.from(j.data),
       j.prov ? Uint8Array.from(j.prov) : null);
   }
+}
+
+
+// Base64 without a dependency, in both a browser and node.
+function b64FromBytes(bytes) {
+  if (typeof Buffer !== 'undefined') return Buffer.from(bytes).toString('base64');
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(s);
+}
+
+function bytesFromB64(b64) {
+  if (typeof Buffer !== 'undefined') {
+    const b = Buffer.from(b64, 'base64');
+    return new Uint8Array(b.buffer, b.byteOffset, b.byteLength).slice();
+  }
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
 }
