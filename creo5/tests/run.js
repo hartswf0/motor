@@ -1414,9 +1414,15 @@ group('bodies', () => {
     const w = hillside({ cell: 30 });
     const coarse = w.place.terrain.cell;
     assert(coarse > 20, `this test needs a coarse DEM, has ${coarse.toFixed(1)} m`);
-    const r = refineTerrain(w.place, 3);
+    const before = w.place.terrain.bounds[2] - w.place.terrain.bounds[0];
+    const r = refineTerrain(w.place, 3, [0, 0], 90);
     assert(r.refined, 'refusing to refine leaves buildings unrecordable');
-    assert(w.place.terrain.cell <= 3.1, `still ${w.place.terrain.cell} m`);
+    // The contract changed, and this test was asserting the old one: refinement
+    // used to REPLACE the ground with the window, which meant seating a house on
+    // an 11 km site left a 0.3 km site. The ground must survive.
+    const after = w.place.terrain.bounds[2] - w.place.terrain.bounds[0];
+    eq(Math.round(after), Math.round(before), 'refining the ground shrank the ground');
+    assert(r.field && r.field.cell <= 3.1, `the fine window is ${r.field?.cell} m`);
     // and it says plainly that the new detail is interpolation, not survey
     assert(/interpolation/.test(w.place.meta.refined.note), 'the invention must be declared');
     // refining twice is a no-op, not a further invention
