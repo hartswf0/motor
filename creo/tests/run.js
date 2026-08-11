@@ -20,6 +20,8 @@ import { lexiconCollisions } from '../src/lang/lexicon.js';
 import { repairFor } from '../src/ai/operator.js';
 import { FLAT_ORDER, Renderer } from '../src/render/gl.js';
 import { parseCoordinates, coordinatePlace } from '../src/import/geocode.js';
+import { reframe } from '../src/ui/importui.js';
+import { slug } from '../src/import/place.js';
 import { toGeoJSON, fromGeoJSON } from '../src/world/export.js';
 import { consequenceOf } from '../src/sim/consequence.js';
 import { runWater } from '../src/sim/water.js';
@@ -1328,6 +1330,53 @@ group('locating', () => {
     const widthM = (e0 - w0) * 111320 * Math.cos((at.lat * Math.PI) / 180);
     assert(Math.abs(heightM - 900) < 20, `window is ${heightM.toFixed(0)} m tall, wanted 900`);
     assert(Math.abs(widthM - 900) < 20, `window is ${widthM.toFixed(0)} m wide, wanted 900`);
+  });
+
+  test('the window can be widened, or moved to where you are looking', () => {
+    // A window is a guess made before seeing anything, so the thing you came
+    // for runs off its edge. Widening used to mean searching again from scratch
+    // and losing the place you were standing in. The place remembers the corner
+    // of the world it was cut from, so the camera can be turned back into a
+    // latitude and longitude.
+    const key = 'watauga-lake-carter-county-united-states';
+    if (!existsSync(new URL(`../places/${key}.json`, import.meta.url))) return;
+    const w = World.load(readFileSync(new URL(`../places/${key}.json`, import.meta.url), 'utf8'));
+    const b0 = w.place.meta.bbox;
+    const lat0 = (b0[0] + b0[2]) / 2, lon0 = (b0[1] + b0[3]) / 2;
+
+    // centred: same centre, bigger window
+    const wide = reframe(w, { camera: { target: [0, 0] }, metres: 1800 });
+    assert(Math.abs(wide.lat - lat0) < 1e-6 && Math.abs(wide.lon - lon0) < 1e-6,
+      'widening from the centre moved the centre');
+    const tall = (wide.bbox[2] - wide.bbox[0]) * 111320;
+    assert(Math.abs(tall - 1800) < 20, `asked for 1800 m, got ${tall.toFixed(0)}`);
+
+    // looking somewhere: the centre follows, in real metres
+    const moved = reframe(w, { camera: { target: [300, 300] }, metres: 900 });
+    const northM = (moved.lat - lat0) * 111320;
+    const eastM = (moved.lon - lon0) * 111320 * Math.cos((lat0 * Math.PI) / 180);
+    assert(Math.abs(northM - 300) < 5, `moved ${northM.toFixed(0)} m north, wanted 300`);
+    assert(Math.abs(eastM - 300) < 5, `moved ${eastM.toFixed(0)} m east, wanted 300`);
+
+    // and a place that does not know where it is says so rather than guessing
+    const synthetic = buildPlace('settlement');
+    let threw = null;
+    try { reframe(synthetic, { camera: { target: [0, 0] }, metres: 900 }); }
+    catch (err) { threw = err.message; }
+    assert(threw && /where in the world/.test(threw), `invented a location: ${threw}`);
+  });
+
+  test('a widened window does not overwrite the one it came from', () => {
+    // Keys were truncated at 40 characters, which cut the width off the end:
+    // the 900 m and 2300 m windows of the same place slugged identically, so
+    // re-cutting a window silently destroyed its origin. Caught live, not by
+    // reading the code.
+    const base = 'Watauga Lake, Carter County, United States';
+    const keys = [base, `${base} · 900 m`, `${base} · 2300 m`, `${base} · 3600 m`].map(slug);
+    eq(new Set(keys).size, keys.length, `these collide: ${keys.join(', ')}`);
+    for (const k of keys) assert(k.length <= 64, `${k} is unreasonably long`);
+    // ordinary names are untouched
+    eq(slug('Kibera, Nairobi'), 'kibera-nairobi');
   });
 
   test('an unmapped place still opens, and says so', () => {

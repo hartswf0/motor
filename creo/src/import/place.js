@@ -13,7 +13,26 @@ import { makeProjection } from '../core/geom.js';
 /** Overpass is a shared resource. Refuse politely rather than ask for a city. */
 export const MAX_SPAN_M = 2500;
 
+/**
+ * A key is an identity, so it must not lose the part that distinguishes it.
+ * Truncating at 40 characters cut the width off the end of a widened place —
+ * "Watauga Lake, Carter County, United States · 2300 m" and the original 900 m
+ * window slugged to the same key, and re-cutting a window silently destroyed
+ * the one it came from. Anything after the last "·" is the distinguishing part
+ * and is kept whole.
+ */
 export function slug(s) {
+  const str = String(s || '');
+  const cut = str.lastIndexOf('·');
+  if (cut > 0) {
+    const head = plainSlug(str.slice(0, cut)).slice(0, 34);
+    const tail = plainSlug(str.slice(cut + 1));
+    return tail ? `${head}-${tail}` : head;
+  }
+  return plainSlug(str);
+}
+
+function plainSlug(s) {
   return String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
     .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'place';
 }

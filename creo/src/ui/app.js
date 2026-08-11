@@ -8,7 +8,7 @@
 import * as G from '../core/geom.js';
 import { buildPlace, PLACES } from '../places/index.js';
 import { listImported, loadImported, attribution } from '../places/imported.js';
-import { openImportPanel, listCached, loadCached } from './importui.js';
+import { openImportPanel, openReframePanel, listCached, loadCached } from './importui.js';
 import { proposeOperations, critique, hasKey, getConfig, setConfig, listModels, EFFORTS, lastCalls } from '../ai/operator.js';
 import { MODES, MODE_ORDER, routeMode, STEP_LABELS } from '../ai/modes.js';
 import { investigate, summarise } from '../ai/investigate.js';
@@ -1665,6 +1665,28 @@ $('placeChip').onclick = async (ev) => {
     });
   };
   menu.append(anywhere);
+
+  // A window is a guess made before you have seen anything. Once the thing you
+  // came for runs off the edge, widening it should not cost you the place you
+  // are standing in.
+  if (S.world.place.meta?.bbox) {
+    const b = S.world.place.meta.bbox;
+    const across = Math.round((b[2] - b[0]) * 111320);
+    const more = document.createElement('button');
+    more.innerHTML = `Show more around here…<span class="sub">this window is ${across} m across — widen it, or move it to where you are looking</span>`;
+    more.onclick = () => {
+      menu.remove();
+      openReframePanel({
+        anchorEl: $('placeChip'),
+        world: S.world,
+        camera: S.cam,
+        currentMetres: across,
+        toast,
+        onLoaded: (world, key, name) => adoptWorld(world, key, name),
+      });
+    };
+    menu.append(more);
+  }
 
   const cached = await listCached();
   for (const p of cached) {
