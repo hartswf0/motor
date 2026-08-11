@@ -2156,7 +2156,29 @@ function adoptWorld(world, key, name) {
   const credit = attribution(world);
   $('attribution').textContent = credit || '';
   $('attribution').hidden = !credit;
-  frameWorld();
+  // Open ON THE THING, not on the middle of a valley. A site with a house
+  // proposed on it should show you the house; a site with a boundary should
+  // show you the boundary. Framing the whole terrain was right when a place was
+  // a street and is useless when it is eleven kilometres of hillside.
+  const focus = S.world.entities().find((e) => e.id === 'henry-house')
+    || S.world.entities().find((e) => e.epistemic === 'PROPOSED' && e.type === 'structure')
+    || S.world.entities().find((e) => e.type === 'parcel');
+  // Deferred a tick: loadPlace is not the last thing to touch the camera, and
+  // framing that is immediately overruled is the same as no framing at all —
+  // which is why this opened a kilometre up with the house invisible.
+  if (focus) setTimeout(() => {
+    const r = S.world.ringOf(focus);
+    const c = r && G.centroid(r);
+    if (c) {
+      const ob = G.orientedBounds(r);
+      S.cam.target = [c[0], c[1], S.world.place.groundAt(c[0], c[1])];
+      S.cam.dist = Math.max(60, Math.min(900, Math.max(ob.width, ob.depth) * 2.4));
+      S.cam.pitch = 0.34;
+      clampCamera(); updateFidelity();
+      S.dirty = true;
+    }
+  }, 60);
+  if (!focus) frameWorld();
   refreshChrome();
   S.dirty = true;
   remember('creo.place', key);
@@ -2196,7 +2218,29 @@ async function loadPlace(key) {
   $('attribution').textContent = credit || '';
   $('attribution').hidden = !credit;
   hide('proposal'); hide('answer'); hide('branches'); hide('tools');
-  frameWorld();
+  // Open ON THE THING, not on the middle of a valley. A site with a house
+  // proposed on it should show you the house; a site with a boundary should
+  // show you the boundary. Framing the whole terrain was right when a place was
+  // a street and is useless when it is eleven kilometres of hillside.
+  const focus = S.world.entities().find((e) => e.id === 'henry-house')
+    || S.world.entities().find((e) => e.epistemic === 'PROPOSED' && e.type === 'structure')
+    || S.world.entities().find((e) => e.type === 'parcel');
+  // Deferred a tick: loadPlace is not the last thing to touch the camera, and
+  // framing that is immediately overruled is the same as no framing at all —
+  // which is why this opened a kilometre up with the house invisible.
+  if (focus) setTimeout(() => {
+    const r = S.world.ringOf(focus);
+    const c = r && G.centroid(r);
+    if (c) {
+      const ob = G.orientedBounds(r);
+      S.cam.target = [c[0], c[1], S.world.place.groundAt(c[0], c[1])];
+      S.cam.dist = Math.max(60, Math.min(900, Math.max(ob.width, ob.depth) * 2.4));
+      S.cam.pitch = 0.34;
+      clampCamera(); updateFidelity();
+      S.dirty = true;
+    }
+  }, 60);
+  if (!focus) frameWorld();
   refreshChrome();
   S.dirty = true;
   // remember what actually opened, not what was asked for — otherwise a place
