@@ -34,8 +34,14 @@
 <div id="plan" hidden>
   <canvas id="planCanvas" aria-label="Plan of the whole place. Tap to move there."></canvas>
   <button id="exploreBtn" title="Drag the window to ground you have not loaded (X)" aria-label="Explore beyond this ground">⊕</button>
-  <div id="exploreHint" hidden></div>
 </div>
+
+<!-- Explore controls sit OUTSIDE the plan: inside it they were clipped by its
+     own overflow, and a control you cannot see is a control you do not have. -->
+<div id="exploreHint" hidden>
+    <span id="exploreWhere"></span>
+    <button id="exploreGo" class="btn primary" hidden></button>
+  </div>
 
 <div id="viewTools">
   <button id="fitBtn" class="icon small" title="Show the whole place (F)" aria-label="Show the whole place">⤢</button>

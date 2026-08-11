@@ -80,14 +80,18 @@ export class Minimap {
     this.ctx = canvas.getContext('2d');
     this.onGo = onGo;
     // EXPLORE: the plan stops being a picture of what is loaded and becomes a
-    // way of asking for what is not. It zooms out past the edge of the imported
-    // ground, draws that ground as a lit rectangle in a dark surround, and lets
-    // the window itself be dragged somewhere new — because "what is over there"
-    // is the question a plan makes you want to ask, and until now the plan could
-    // only answer with the edge of the tile.
+    // way of asking for what is not.
+    //
+    // Dragging a box around a 168-pixel plan was fiddly to aim and fetched the
+    // moment you let go, which is the wrong shape for something that costs a
+    // request to a public service. Ground comes in windows, so the choice is
+    // between WINDOWS: the eight neighbours of the one you are in, picked
+    // discretely, confirmed deliberately, and never fetched by accident.
     this.onExplore = onExplore;
     this.explore = false;
-    this.proposed = null;      // [x, y] in the place's own metres
+    this.pick = null;          // [i, j] in neighbouring windows, e.g. [1, -1]
+    this.loaded = new Set();   // "i,j" of neighbours already in this browser
+    this.preview = null;       // the ground around you, elevation only
     this.bounds = null;
     this.dragging = false;
 
@@ -106,21 +110,77 @@ export class Minimap {
       try { canvas.setPointerCapture(ev.pointerId); } catch { /* fine */ }
       const p = toWorld(ev);
       if (!p) return;
-      if (this.explore) { this.proposed = p; this.onExplore?.('move', p); }
-      else onGo(p);
+      if (this.explore) { this.choose(p); return; }
+      onGo(p);
     });
     canvas.addEventListener('pointermove', (ev) => {
-      if (!this.dragging) return;
+      if (!this.dragging || this.explore) return;
       const p = toWorld(ev);
-      if (!p) return;
-      if (this.explore) { this.proposed = p; this.onExplore?.('move', p); }
-      else onGo(p);
+      if (p) onGo(p);
     });
-    canvas.addEventListener('pointerup', () => {
-      this.dragging = false;
-      if (this.explore && this.proposed) this.onExplore?.('settle', this.proposed);
-    });
+    canvas.addEventListener('pointerup', () => { this.dragging = false; });
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+  }
+
+  /**
+   * The ground around you, shaded, drawn behind everything else — so choosing a
+   * neighbouring window is choosing a visible ridge or valley rather than one of
+   * eight identical empty boxes.
+   */
+  drawPreview(g, X, Y, scale, pb) {
+    const { field, centre, half } = this.preview;
+    const t = field;
+    let lo = Infinity, hi = -Infinity;
+    if (t.__plo === undefined) {
+      const sorted = Float32Array.from(t.data).sort();
+      t.__plo = sorted[Math.floor(sorted.length * 0.02)];
+      t.__phi = sorted[Math.floor(sorted.length * 0.98)];
+    }
+    lo = t.__plo; hi = Math.max(t.__phi, t.__plo + 1);
+
+    // the preview's own metres, mapped onto the place's metres: the loaded
+    // window sits at `centre` in the preview and at the middle of pb here
+    const cx = (pb[0] + pb[2]) / 2, cy = (pb[1] + pb[3]) / 2;
+    const toPlace = (px, py) => [cx + (px - centre[0]), cy + (py - centre[1])];
+
+    const step = Math.max(1, Math.floor(t.nx / 90));
+    for (let j = 0; j + step < t.ny; j += step) {
+      for (let i = 0; i + step < t.nx; i += step) {
+        const h = t.at(i, j);
+        const f = Math.max(0, Math.min(1, (h - lo) / (hi - lo)));
+        // shade from the slope so ridges and valleys read, not just height
+        const dzdx = (t.at(i + step, j) - t.at(i, j)) / (t.cell * step);
+        const dzdy = (t.at(i, j + step) - t.at(i, j)) / (t.cell * step);
+        const lit = Math.max(0, Math.min(1, 0.5 + (dzdx * 0.6 + dzdy * 0.5)));
+        const v = 0.10 + f * 0.16 + lit * 0.16;
+        const x0 = t.bounds[0] + i * t.cell, y0 = t.bounds[1] + j * t.cell;
+        const a = toPlace(x0, y0);
+        const b = toPlace(x0 + t.cell * step, y0 + t.cell * step);
+        g.fillStyle = `rgb(${Math.round(v * 255)},${Math.round(v * 262)},${Math.round(v * 250)})`;
+        g.fillRect(X(a[0]), Y(b[1]), Math.max(1, (b[0] - a[0]) * scale), Math.max(1, (b[1] - a[1]) * scale));
+      }
+    }
+  }
+
+  /** Which neighbouring window a point on the plan falls in. */
+  choose(p) {
+    const b = this.placeBounds;
+    if (!b) return;
+    const w = b[2] - b[0], h = b[3] - b[1];
+    const cx = (b[0] + b[2]) / 2, cy = (b[1] + b[3]) / 2;
+    const i = Math.max(-1, Math.min(1, Math.round((p[0] - cx) / w)));
+    const j = Math.max(-1, Math.min(1, Math.round((p[1] - cy) / h)));
+    this.pick = (i === 0 && j === 0) ? null : [i, j];
+    this.onExplore?.('pick', this.pick);
+  }
+
+  /** Step the choice with the keyboard, for anyone who cannot aim a drag. */
+  step(di, dj) {
+    const [i, j] = this.pick || [0, 0];
+    const ni = Math.max(-1, Math.min(1, i + di));
+    const nj = Math.max(-1, Math.min(1, j + dj));
+    this.pick = (ni === 0 && nj === 0) ? null : [ni, nj];
+    this.onExplore?.('pick', this.pick);
   }
 
   draw(world, { camera, selection, hidden }) {
@@ -134,7 +194,11 @@ export class Minimap {
 
     // fit the place, keeping the aspect honest — and in explore mode, pull back
     // so there is somewhere to drag TO
-    const pb = world.place.bounds();
+    // The WINDOW is the terrain's extent — exactly the ground that was cut from
+    // the world. Entity bounds spill past it, because a way clipped at the edge
+    // still reaches a little beyond, and stepping by that spilled figure moved
+    // the window 1012 m when it should have moved 900.
+    const pb = world.place.terrain?.bounds || world.place.bounds();
     const grow = this.explore ? 1.6 : 0;
     const b = grow
       ? [pb[0] - (pb[2] - pb[0]) * grow, pb[1] - (pb[3] - pb[1]) * grow,
@@ -208,23 +272,45 @@ export class Minimap {
       g.beginPath(); g.arc(X(c2[0]), Y(c2[1]), 5, 0, 7); g.stroke();
     }
 
-    // in explore mode: what is loaded, and where you are proposing to go
+    // in explore mode: the eight neighbours, and which of them you already have
+    this.placeBounds = pb;
+    if (this.explore && this.preview) this.drawPreview(g, X, Y, scale, pb);
     if (this.explore) {
-      g.save();
-      g.strokeStyle = 'rgba(255,255,255,.35)';
-      g.setLineDash([3, 3]);
-      g.lineWidth = 1;
-      g.strokeRect(X(pb[0]), Y(pb[3]), (pb[2] - pb[0]) * scale, (pb[3] - pb[1]) * scale);
-      g.restore();
-      if (this.proposed) {
-        const w2 = (pb[2] - pb[0]) / 2, h2 = (pb[3] - pb[1]) / 2;
-        const p = this.proposed;
-        g.fillStyle = 'rgba(88,217,196,.14)';
-        g.strokeStyle = '#58d9c4';
-        g.lineWidth = 1.5;
-        g.fillRect(X(p[0] - w2), Y(p[1] + h2), w2 * 2 * scale, h2 * 2 * scale);
-        g.strokeRect(X(p[0] - w2), Y(p[1] + h2), w2 * 2 * scale, h2 * 2 * scale);
+      const w = pb[2] - pb[0], h = pb[3] - pb[1];
+      for (let i = -1; i <= 1; i++) {
+        for (let j = -1; j <= 1; j++) {
+          if (i === 0 && j === 0) continue;
+          const x0 = pb[0] + i * w, y0 = pb[1] + j * h;
+          const px = X(x0), py = Y(y0 + h);
+          const pw = w * scale, ph = h * scale;
+          const here = this.loaded.has(`${i},${j}`);
+          const picked = this.pick && this.pick[0] === i && this.pick[1] === j;
+          g.save();
+          g.lineWidth = picked ? 1.8 : 1;
+          if (picked) {
+            g.fillStyle = 'rgba(88,217,196,.20)';
+            g.fillRect(px, py, pw, ph);
+            g.strokeStyle = '#58d9c4';
+          } else {
+            g.setLineDash([3, 3]);
+            g.strokeStyle = here ? 'rgba(140,220,200,.55)' : 'rgba(255,255,255,.20)';
+          }
+          g.strokeRect(px, py, pw, ph);
+          g.restore();
+          if (here) {
+            g.fillStyle = 'rgba(140,220,200,.85)';
+            g.beginPath();
+            g.arc(px + pw / 2, py + ph / 2, 2.4, 0, 7);
+            g.fill();
+          }
+        }
       }
+      // the ground you are standing on, stated plainly
+      g.save();
+      g.strokeStyle = 'rgba(255,255,255,.55)';
+      g.lineWidth = 1.5;
+      g.strokeRect(X(pb[0]), Y(pb[3]), w * scale, h * scale);
+      g.restore();
     }
 
     // you are here, looking that way
@@ -251,6 +337,7 @@ const HELP = [
   ['Move around', 'Drag the map to move. Scroll or pinch to zoom — it zooms toward where you point.'],
   ['Turn the view', 'Right-drag, or hold Shift and drag. Two fingers twist to turn on a touchscreen.'],
   ['Go to a building', 'Press <b>G</b> or ⌕ and type its name. It flies there and hands it to you, ready to talk about.'],
+  ['Explore around', 'Press <b>X</b> or ⊕ on the plan. Tap a neighbouring window, or use the <b>arrows</b>, then press the button. Nothing is fetched until you say so, and ground you already have opens instantly.'],
   ['Lost?', 'Press <b>F</b>, or the ⤢ button, to see the whole place again. The small plan shows where you are — tap it to go there.'],
   ['Choose something', 'Tap it. Its name and size appear, with things you can do to it.'],
   ['Say something', 'Tap the bar and speak plainly: <i>“this floods when it rains”</i>, <i>“we need a drain here”</i>, <i>“why is this here?”</i>'],

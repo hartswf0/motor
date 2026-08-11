@@ -9,6 +9,9 @@
 
 import { importPlace, geocode } from '../import/place.js';
 import { parseCoordinates, coordinatePlace } from '../import/geocode.js';
+import { sampleTerrain } from '../import/terrain.js';
+import { localBounds } from '../import/osm.js';
+import { makeProjection } from '../core/geom.js';
 import { World } from '../core/world.js';
 
 const DB = 'creo-places';
@@ -273,4 +276,43 @@ export function openReframePanel({ anchorEl, world, camera, currentMetres = 900,
     if (!panel.contains(e.target)) { panel.remove(); document.removeEventListener('pointerdown', off); }
   }), 0);
   return panel;
+}
+
+/**
+ * PREVIEW THE GROUND BEFORE COMMITTING TO IT.
+ *
+ * Choosing one of eight neighbouring windows from eight empty dashed boxes is
+ * choosing blind, and the whole reason to move is that you want to see what is
+ * over there. The elevation data is the cheap half of an import — usually the
+ * very same tiles already fetched for the window you are standing in, since one
+ * terrarium tile at this zoom covers several kilometres — so the ground around
+ * you can be shown for almost nothing, long before any geometry is built.
+ *
+ * This deliberately fetches ONLY elevation. No Overpass query, no buildings, no
+ * roads: the shape of the land is what tells you whether a place is worth going
+ * to, and it arrives in a fraction of the time.
+ */
+export async function previewGround(world, { span = 3, log = () => {} } = {}) {
+  const bbox = world.place.meta?.bbox;
+  if (!bbox) throw new Error('this place does not remember where in the world it is');
+  const [s, w, n, e] = bbox;
+  const dLat = (n - s) * ((span - 1) / 2);
+  const dLon = (e - w) * ((span - 1) / 2);
+  const wide = [s - dLat, w - dLon, n + dLat, e + dLon];
+
+  const projection = makeProjection((wide[0] + wide[2]) / 2, (wide[1] + wide[3]) / 2);
+  log('looking at the ground around you…');
+  // sampleTerrain returns the fetch's whole account of itself; the heightfield
+  // is one field of it, and handing the wrapper to the plan drew nothing at all
+  const sampled = await sampleTerrain(wide, projection, localBounds(projection, wide), { log });
+  const field = sampled.heightfield;
+  if (!field) throw new Error('no elevation is published for this ground');
+
+  // where the loaded window sits inside the preview, in the preview's own metres
+  const centre = projection.toLocal((s + n) / 2, (w + e) / 2);
+  const half = world.place.terrain
+    ? [(world.place.terrain.bounds[2] - world.place.terrain.bounds[0]) / 2,
+       (world.place.terrain.bounds[3] - world.place.terrain.bounds[1]) / 2]
+    : [450, 450];
+  return { field, centre, half, span, bbox: wide, relief: sampled.relief, tiles: sampled.tiles };
 }

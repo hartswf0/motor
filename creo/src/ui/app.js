@@ -8,7 +8,7 @@
 import * as G from '../core/geom.js';
 import { buildPlace, PLACES } from '../places/index.js';
 import { listImported, loadImported, attribution } from '../places/imported.js';
-import { openImportPanel, openReframePanel, reframe, cachePut, listCached, loadCached } from './importui.js';
+import { openImportPanel, openReframePanel, reframe, previewGround, cachePut, listCached, loadCached } from './importui.js';
 import { importPlace } from '../import/place.js';
 import { proposeOperations, critique, hasKey, getConfig, setConfig, listModels, EFFORTS, lastCalls } from '../ai/operator.js';
 import { MODES, MODE_ORDER, routeMode, STEP_LABELS } from '../ai/modes.js';
@@ -1870,6 +1870,15 @@ addEventListener('keydown', (ev) => {
   else if (k === 'f') frameAll();
   else if (k === 'g') openFindPanel();
   else if (k === 'x') $('exploreBtn').click();
+  // In explore mode the arrows choose the window rather than move the camera —
+  // the same keys, aimed at the thing actually in front of you.
+  else if (minimap?.explore && ['arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(k)) {
+    ev.preventDefault();
+    minimap.step(k === 'arrowright' ? 1 : k === 'arrowleft' ? -1 : 0,
+      k === 'arrowup' ? 1 : k === 'arrowdown' ? -1 : 0);
+  }
+  else if (minimap?.explore && (k === 'enter' || k === ' ')) { ev.preventDefault(); $('exploreGo').click(); }
+  else if (minimap?.explore && k === 'escape') { $('exploreBtn').click(); }
   else if (k === 'm') $('planBtn').click();
   else if (k === '?' || (k === '/' && ev.shiftKey)) { ev.preventDefault(); openHelp(); }
   else if (k === 'n') openNote();
@@ -1927,22 +1936,20 @@ minimap = new Minimap($('planCanvas'), {
     S.cam.target = [p[0], p[1], S.world.place.groundAt(p[0], p[1])];
     clampCamera();
   },
-  // Dragging the window is a request for ground that is not here yet, so it
-  // asks before it fetches: a real request to a public service, and a place a
-  // person may not have meant to leave.
-  onExplore: (phase, at) => {
+  // Ground comes in windows, so moving is a choice between windows: pick one of
+  // the eight neighbours, see whether you already have it, then say go. Nothing
+  // is fetched by pointing at it.
+  onExplore: (phase, pick) => {
     S.dirty = true;
-    if (phase === 'move') {
-      const off = Math.hypot(at[0], at[1]);
-      $('exploreHint').hidden = false;
-      $('exploreHint').textContent = `${Math.round(off)} m from here — let go to fetch this ground`;
-      return;
-    }
-    const across = placeWidth();
-    $('exploreHint').textContent = 'fetching…';
-    exploreTo(at, across);
+    if (phase !== 'pick') return;
+    describePick(pick);
   },
 });
+
+const COMPASS = {
+  '0,1': 'north', '0,-1': 'south', '1,0': 'east', '-1,0': 'west',
+  '1,1': 'north-east', '-1,1': 'north-west', '1,-1': 'south-east', '-1,-1': 'south-west',
+};
 
 /** How wide the loaded window is, in metres, from the corner of the world it remembers. */
 function placeWidth() {
@@ -1950,18 +1957,85 @@ function placeWidth() {
   return b ? Math.round((b[2] - b[0]) * 111320) : 900;
 }
 
-async function exploreTo(at, metres) {
+function describePick(pick) {
+  const where = $('exploreWhere');
+  const go = $('exploreGo');
+  if (!pick) {
+    where.textContent = 'tap a neighbouring window, or use the arrow keys';
+    go.hidden = true;
+    return;
+  }
+  const key = `${pick[0]},${pick[1]}`;
+  const known = minimap.loaded.has(key);
+  where.textContent = known
+    ? `${COMPASS[key]} — you already have this ground`
+    : `${COMPASS[key]} — ${placeWidth()} m of ground, not loaded yet`;
+  go.hidden = false;
+  go.textContent = known ? `Go ${COMPASS[key]}` : `Fetch ${COMPASS[key]}`;
+}
+
+/** Which neighbours are already in this browser, so moving back is free. */
+async function refreshNeighbours() {
+  minimap.loaded = new Set();
+  const b = S.world.place.meta?.bbox;
+  if (!b) { S.dirty = true; return; }
+  const h = b[2] - b[0], w = b[3] - b[1];
+  const lat = (b[0] + b[2]) / 2, lon = (b[1] + b[3]) / 2;
+  const cached = (await listCached()) || [];
+  minimap.neighbourKeys = {};
+  for (let i = -1; i <= 1; i++) {
+    for (let j = -1; j <= 1; j++) {
+      if (!i && !j) continue;
+      const wantLat = lat + j * h, wantLon = lon + i * w;
+      const hit = cached.find((c) => {
+        if (!c.bbox) return false;
+        const cl = (c.bbox[0] + c.bbox[2]) / 2, cn = (c.bbox[1] + c.bbox[3]) / 2;
+        return Math.abs(cl - wantLat) < h * 0.25 && Math.abs(cn - wantLon) < w * 0.25;
+      });
+      if (hit) {
+        minimap.loaded.add(`${i},${j}`);
+        minimap.neighbourKeys[`${i},${j}`] = hit.key;
+      }
+    }
+  }
+  S.dirty = true;
+}
+
+$('exploreGo').onclick = async () => {
+  const pick = minimap.pick;
+  if (!pick || S.busy) return;
+  const key = `${pick[0]},${pick[1]}`;
+  const cachedKey = minimap.neighbourKeys?.[key];
+  // one window across, measured on the terrain that was actually cut
+  const b = S.world.place.terrain?.bounds || S.world.place.bounds();
+  const at = [pick[0] * (b[2] - b[0]), pick[1] * (b[3] - b[1])];
+
+  if (cachedKey) {
+    // already here: no request, no waiting, no cost
+    try {
+      const world = await loadCached(cachedKey);
+      adoptWorld(world, cachedKey, world.place.name);
+      minimap.pick = null;
+      await refreshNeighbours();
+      describePick(null);
+      toast(`${COMPASS[key]} — from this browser, nothing fetched.`);
+    } catch (err) { reportFailure('Could not open that ground', err); }
+    return;
+  }
+  await exploreTo(at, placeWidth(), COMPASS[key]);
+};
+
+async function exploreTo(at, metres, whereName) {
   if (S.busy) return;
   S.busy = true;
+  const where = $('exploreWhere');
   try {
     const { bbox } = reframe(S.world, { at, metres });
     const base = (S.world.place.name || 'here').split(' · ')[0].split(' — ')[0];
-    const north = at[1] >= 0 ? 'N' : 'S';
-    const east = at[0] >= 0 ? 'E' : 'W';
-    const label = `${base} · ${Math.round(Math.hypot(at[0], at[1]))} m ${north}${east}`;
+    const label = `${base} · ${whereName}`;
     const { world, key, name, stats } = await importPlace({
       bbox, name: label, metres,
-      log: (m) => { $('exploreHint').textContent = String(m).slice(0, 60); },
+      log: (m) => { where.textContent = String(m).slice(0, 64); },
     });
     await cachePut(key, {
       payload: world.save(),
@@ -1974,24 +2048,44 @@ async function exploreTo(at, metres) {
       },
     });
     adoptWorld(world, key, name);
-    minimap.proposed = null;
-    $('exploreHint').hidden = true;
-    toast(`Moved ${Math.round(Math.hypot(at[0], at[1]))} m — ${stats.buildings || 0} buildings, ${world.place.meta?.relief || 0} m relief.`);
+    minimap.pick = null;
+    await refreshNeighbours();
+    describePick(null);
+    toast(`${whereName} — ${stats.buildings || 0} buildings, ${world.place.meta?.relief || 0} m relief.`);
   } catch (err) {
-    $('exploreHint').textContent = String(err.message).slice(0, 70);
+    where.textContent = String(err.message).slice(0, 70);
     reportFailure('Could not fetch that ground', err);
   } finally {
     S.busy = false;
   }
 }
 
-$('exploreBtn').onclick = () => {
+$('exploreBtn').onclick = async () => {
   minimap.explore = !minimap.explore;
-  minimap.proposed = null;
+  minimap.pick = null;
   $('exploreBtn').classList.toggle('on', minimap.explore);
+  $('plan').classList.toggle('exploring', minimap.explore);
   $('exploreHint').hidden = !minimap.explore;
-  if (minimap.explore) $('exploreHint').textContent = 'drag the box to ground you have not loaded';
+  $('exploreGo').hidden = true;
+  if (!minimap.explore) { minimap.preview = null; S.dirty = true; return; }
+  describePick(null);
+  await refreshNeighbours();
   S.dirty = true;
+
+  // Show the ground around before anything is chosen. Elevation only — no
+  // Overpass query, no geometry — because the shape of the land is what tells
+  // you whether somewhere is worth going to, and it is usually the same tiles
+  // already fetched for where you are standing.
+  try {
+    $('exploreWhere').textContent = 'looking at the ground around you…';
+    minimap.preview = await previewGround(S.world, { span: 3 });
+    S.dirty = true;
+    describePick(minimap.pick);
+  } catch (err) {
+    minimap.preview = null;
+    describePick(minimap.pick);
+    console.warn('[CREO] no preview of the surrounding ground:', err.message);
+  }
 };
 $('plan').hidden = false;
 $('planBtn').classList.add('on');
@@ -2037,6 +2131,7 @@ window.CREO = {
   select: (ids) => { S.selection = new Set(ids); S.dirty = true; showTools(); },
   frameAll, openNote, openHelp, runAssistant, setMode: setMode_, openFindPanel, goToEntity,
   openSetup: openAIPanel, askSubject, showTools, rankModel, captureView, PREFERRED,
+  get minimap() { return minimap; },
   _minimap: () => minimap,
   pointAt: (p) => { S.pointer = p; },
   draw: (pts, closed) => { S.stroke = pts; S.strokeClosed = closed; S.dirty = true; },
