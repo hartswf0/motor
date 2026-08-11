@@ -141,6 +141,23 @@ export class Renderer {
     const ents = world.entities();
     const detail = { high: 0, medium: 1, low: 2, symbolic: 3 }[fidelity];
 
+    // Draping needs the ground and a sensible piece size. The terrain's own
+    // sample spacing is the right scale: finer invents detail the data does not
+    // have, coarser is what put roads inside hillsides in the first place.
+    const ground = (x, y) => world.place.groundAt(x, y);
+    // Half the DEM's own cell: bilinear ground sampling makes the midpoints
+    // real, so this reads the elevation data more finely without inventing
+    // detail it does not contain. Measured on Ravello, halving the piece takes
+    // the worst deviation from 6.0 m to 3.0 m. Coarser when drawing cheaply.
+    const dem = world.place.terrain?.cell ?? 24;
+    const cell = Math.max(8, Math.min(16, dem / 2)) * (detail >= 2 ? 2 : 1);
+    // What the flat thing was authored against, so its own thickness survives
+    // the move onto real ground.
+    const groundOf = (e) => {
+      const r = world.place.ringOf(e);
+      return r && r.length ? ground(r[0][0], r[0][1]) : e.zTop;
+    };
+
     for (const e of ents) {
       if (hidden.has(e.type)) continue;          // a layer the person turned off
       if (!visibleAt(e, detail)) continue;
@@ -155,11 +172,11 @@ export class Renderer {
       } else if (e.type === 'observation') {
         // What someone said about a place should mark it, not bury it. An
         // opaque fill over a drawn area hid the very thing being discussed.
-        T.polygon(ring, e.zTop + 0.05, col, 0.18);
+        T.draped(ring, ground, (e.zTop - groundOf(e)) + 0.05, col, 0.18, cell);
         L.ring(ring, e.zTop + 0.06, col, 0.95);
         this.buildPin(S, L, e, ring);
       } else if (isFlat(e)) {
-        S.polygon(ring, e.zTop + 0.03, col, 1);
+        S.draped(ring, ground, (e.zTop - groundOf(e)) + 0.03, col, 1, cell);
       } else {
         // Standing inside a building, the roof is the one thing you do not want
         // to look at. What matters changes with where you are (§17).
@@ -191,7 +208,7 @@ export class Renderer {
       if (!ring || ring.length < 3) continue;
       const bad = g.__invalid;
       const col = bad ? PALETTE.ghostBad : PALETTE.ghost;
-      if (isFlat(g)) T.polygon(ring, g.zTop + 0.05, col, 0.42);
+      if (isFlat(g)) T.draped(ring, ground, (g.zTop - groundOf(g)) + 0.05, col, 0.42, cell);
       else T.prism(ring, g.zBase, g.zTop, col, col, 0.38);
       L.ring(ring, g.zTop + 0.08, col, 1);
       L.ring(ring, g.zBase + 0.02, col, 0.5);
@@ -476,6 +493,25 @@ class Builder {
     const n = normalOf(a, b, c);
     this.tri(a, b, c, n, col, alpha);
     this.tri(a, c, d, n, col, alpha);
+  }
+  /**
+   * A polygon that follows the ground rather than hovering at one height.
+   * The ring is cut into terrain-sized pieces first, so the surface bends with
+   * the hill instead of spanning it: a road across a slope was being drawn at
+   * the height of its first vertex, which on a steep place put it a hundred
+   * metres inside the hillside.
+   */
+  draped(ring, groundAt, offset, col, alpha = 1, cell = 12) {
+    for (const piece of G.tileRing(ring, cell)) {
+      const idx = G.triangulate(piece);
+      for (let i = 0; i < idx.length; i += 3) {
+        const p = [piece[idx[i]], piece[idx[i + 1]], piece[idx[i + 2]]];
+        const v = p.map((q) => [q[0], q[1], groundAt(q[0], q[1]) + offset]);
+        // Each piece now has its own tilt, so it needs its own normal — a road
+        // lying on a hillside must catch the light like the hillside does.
+        this.tri(v[0], v[1], v[2], normalOf(v[0], v[1], v[2]), col, alpha);
+      }
+    }
   }
   polygon(ring, z, col, alpha) {
     const idx = G.triangulate(ring);

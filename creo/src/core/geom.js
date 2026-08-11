@@ -433,3 +433,108 @@ export function makeProjection(anchorLat, anchorLon) {
     toWGS84: (x, y) => [anchorLat + y / mPerDegLat, anchorLon + x / mPerDegLon],
   };
 }
+
+// ------------------------------------------------------------ draping ------
+/**
+ * Cut a ring into pieces small enough that each is effectively planar over the
+ * terrain, so a road or a lawn can follow a hillside instead of hovering over
+ * it or being swallowed by it.
+ *
+ * A grid cell is convex, so Sutherland–Hodgman clipping against it is exact —
+ * no new geometry is invented, the area is preserved, and the pieces tile the
+ * original exactly. Anything already smaller than a cell is returned untouched.
+ *
+ * @param {number[][]} ring
+ * @param {number} cell  edge length in metres; pick it from the terrain's own
+ *                       resolution rather than a taste for detail
+ * @returns {number[][][]} pieces
+ */
+export function tileRing(ring, cell = 12) {
+  if (!ring || ring.length < 3) return [];
+  const b = bbox(ring);
+  const w = b[2] - b[0], h = b[3] - b[1];
+  if (w <= cell && h <= cell) return [ring];
+  // A budget must coarsen the grid, never abandon it. Bailing out on big
+  // polygons left the largest surfaces — the 17-hectare fields, the ones most
+  // likely to cross a hill — as a single flat sheet, which is precisely the
+  // failure this function exists to remove.
+  const MAX_CELLS = 1024;
+  let nx = Math.max(1, Math.ceil(w / cell));
+  let ny = Math.max(1, Math.ceil(h / cell));
+  if (nx * ny > MAX_CELLS) {
+    const k = Math.sqrt((nx * ny) / MAX_CELLS);
+    nx = Math.max(1, Math.round(nx / k));
+    ny = Math.max(1, Math.round(ny / k));
+  }
+  const out = [];
+  for (let i = 0; i < nx; i++) {
+    for (let j = 0; j < ny; j++) {
+      const x0 = b[0] + (w * i) / nx, x1 = b[0] + (w * (i + 1)) / nx;
+      const y0 = b[1] + (h * j) / ny, y1 = b[1] + (h * (j + 1)) / ny;
+      const piece = dedupeRing(clipToRect(ring, x0, y0, x1, y1));
+      // A sliver is not detail. Clipping throws off hairline pieces whose
+      // triangulation is unstable, and an unstable triangle spans ground it was
+      // never given — which showed up as the drape getting WORSE at fine tiling.
+      if (piece.length >= 3 && Math.abs(area(piece)) > 1e-3) out.push(piece);
+    }
+  }
+  return out.length ? out : [ring];
+}
+
+/** Drop points a clip has left coincident; they make triangulation unstable. */
+export function dedupeRing(ring, eps = 1e-6) {
+  const out = [];
+  for (const p of ring) {
+    const q = out[out.length - 1];
+    if (!q || Math.abs(q[0] - p[0]) > eps || Math.abs(q[1] - p[1]) > eps) out.push(p);
+  }
+  while (out.length > 1) {
+    const a = out[0], b = out[out.length - 1];
+    if (Math.abs(a[0] - b[0]) <= eps && Math.abs(a[1] - b[1]) <= eps) out.pop(); else break;
+  }
+  return out;
+}
+
+/** Sutherland–Hodgman against an axis-aligned rectangle. Exact for convex clips. */
+export function clipToRect(ring, x0, y0, x1, y1) {
+  const edges = [
+    (p) => p[0] >= x0, (p) => p[0] <= x1, (p) => p[1] >= y0, (p) => p[1] <= y1,
+  ];
+  const cut = [
+    (a, b) => [x0, a[1] + ((b[1] - a[1]) * (x0 - a[0])) / (b[0] - a[0])],
+    (a, b) => [x1, a[1] + ((b[1] - a[1]) * (x1 - a[0])) / (b[0] - a[0])],
+    (a, b) => [a[0] + ((b[0] - a[0]) * (y0 - a[1])) / (b[1] - a[1]), y0],
+    (a, b) => [a[0] + ((b[0] - a[0]) * (y1 - a[1])) / (b[1] - a[1]), y1],
+  ];
+  let poly = ring;
+  for (let e = 0; e < 4 && poly.length; e++) {
+    const inside = edges[e], intersect = cut[e];
+    const next = [];
+    for (let i = 0; i < poly.length; i++) {
+      const cur = poly[i], prev = poly[(i + poly.length - 1) % poly.length];
+      const curIn = inside(cur), prevIn = inside(prev);
+      if (curIn) {
+        if (!prevIn) next.push(intersect(prev, cur));
+        next.push(cur);
+      } else if (prevIn) next.push(intersect(prev, cur));
+    }
+    poly = next;
+  }
+  return poly;
+}
+
+/** The lowest and highest ground under a footprint, sampled on its own scale. */
+export function groundSpan(ring, groundAt, samples = 6) {
+  let lo = Infinity, hi = -Infinity;
+  const take = (x, y) => { const z = groundAt(x, y); if (z < lo) lo = z; if (z > hi) hi = z; };
+  for (const p of ring) take(p[0], p[1]);
+  const b = bbox(ring);
+  for (let i = 0; i <= samples; i++) {
+    for (let j = 0; j <= samples; j++) {
+      const x = b[0] + ((b[2] - b[0]) * i) / samples;
+      const y = b[1] + ((b[3] - b[1]) * j) / samples;
+      if (pointInRing([x, y], ring)) take(x, y);
+    }
+  }
+  return isFinite(lo) ? { lo, hi } : null;
+}

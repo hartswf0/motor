@@ -74,5 +74,30 @@
     },
     "relief": 54.7,
     "source": "OpenStreetMap (ODbL)"
+  },
+  {
+    "key": "ravello-ravello-italia",
+    "name": "Ravello, Ravello, Italia",
+    "bbox": [
+      40.660283560887535,
+      14.596710734972996,
+      40.66657173911247,
+      14.605000465027002
+    ],
+    "fetchedAt": "2026-08-11T01:43:55.334Z",
+    "scale": "neighbourhood",
+    "counts": {
+      "buildings": 20,
+      "roads": 9,
+      "paths": 14,
+      "water": 1,
+      "surfaces": 3,
+      "trees": 0,
+      "walls": 0,
+      "skipped": 0,
+      "markers": 3
+    },
+    "relief": 281.2,
+    "source": "OpenStreetMap (ODbL)"
   }
 ]

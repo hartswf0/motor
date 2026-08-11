@@ -291,6 +291,26 @@ function drawLabels() {
   stats.labels = used;
 }
 
+/**
+ * How tall a thing is, and how much the ground under it falls.
+ *
+ * Once a building sits on the lowest ground it covers and clears the highest,
+ * its vertical extent is height PLUS the fall of the hill. Reporting that
+ * extent as "10.8 m high" for a three-storey house would be a new lie in place
+ * of the old one. Height is measured from the ground the thing stands on; the
+ * fall is said separately, because on a hillside it is the more interesting
+ * number.
+ */
+function heightOf(e) {
+  const ring = S.world.ringOf(e);
+  const span = ring && ring.length >= 3
+    ? G.groundSpan(ring, (x, y) => S.world.place.groundAt(x, y)) : null;
+  const extent = e.zTop - e.zBase;
+  if (!span) return { height: extent, fall: 0 };
+  const fall = Math.max(0, span.hi - span.lo);
+  return { height: Math.max(0, e.zTop - span.hi), fall, extent };
+}
+
 function labelFor(e) {
   const ring = S.world.ringOf(e);
   const bits = [e.name || (e.use ? `${e.use}` : e.type)];
@@ -298,7 +318,9 @@ function labelFor(e) {
     const ob = G.orientedBounds(ring);
     bits.push(`${ob.width.toFixed(1)}×${ob.depth.toFixed(1)} m`);
   }
-  if (e.zTop - e.zBase > 0.2) bits.push(`${(e.zTop - e.zBase).toFixed(1)} m high`);
+  const { height, fall } = heightOf(e);
+  if (height > 0.2) bits.push(`${height.toFixed(1)} m high`);
+  if (fall > 0.5) bits.push(`on ground falling ${fall.toFixed(1)} m`);
   return bits.join(' · ');
 }
 
@@ -1138,7 +1160,11 @@ function subjectFacts() {
   const e = ids.length === 1 && S.world.get(ids[0]);
   if (!e) return [`${ids.length} things chosen`];
   const ring = S.world.ringOf(e);
-  if (ring) out.push(`${G.area(ring).toFixed(0)} m², ${(e.zTop - e.zBase).toFixed(1)} m tall`);
+  if (ring) {
+    const { height, fall } = heightOf(e);
+    out.push(`${G.area(ring).toFixed(0)} m², ${height.toFixed(1)} m tall`
+      + (fall > 0.5 ? ` on ground that falls ${fall.toFixed(1)} m across it` : ''));
+  }
   out.push(`${String(e.epistemic || 'MODEL').toLowerCase()} · by ${e.provenance?.author || 'unknown'}`);
   const rels = describeRelations(S.world.place, e.id).filter((r) => r.ids.length);
   if (rels.length) out.push(rels.slice(0, 3).map((r) => `${r.kind} ${r.ids.length}`).join(', '));

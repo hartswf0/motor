@@ -1015,6 +1015,100 @@ group('real — a place that exists', () => {
   });
 });
 
+// ================================================================ TERRAIN ===
+// Everything used to take a single height from one sample: a building from its
+// centroid, a road from its FIRST VERTEX. On a hillside that put 70% of Ravello's
+// roads inside the hill — the worst by 151 metres — and left every building in
+// the air. Ground is not a constant, and geometry has to answer to it.
+
+group('slopes', () => {
+  const hilly = existsSync(new URL('../places/ravello-ravello-italia.json', import.meta.url))
+    ? 'ravello-ravello-italia' : null;
+
+  test('tiling preserves area exactly, at every scale', () => {
+    const shapes = [
+      [[0, 0], [100, 0], [100, 40], [0, 40]],
+      [[0, 0], [60, 5], [30, 50]],
+      [[0, 0], [900, 0], [900, 700], [0, 700]],          // must not defeat the budget
+      [[0, 0], [80, 0], [80, 30], [40, 12], [0, 30]],    // concave
+    ];
+    for (const ring of shapes) {
+      for (const cell of [6, 12, 24, 40]) {
+        const pieces = G.tileRing(ring, cell);
+        const total = pieces.reduce((sum, p) => sum + Math.abs(G.area(p)), 0);
+        const want = Math.abs(G.area(ring));
+        assert(Math.abs(total - want) < Math.max(1e-6, want * 1e-9),
+          `area ${want.toFixed(3)} became ${total.toFixed(3)} at cell ${cell}`);
+      }
+    }
+  });
+
+  test('a budget coarsens the grid and never abandons it', () => {
+    // 630,000 m² at 6 m cells is 17,500 cells: far over budget. Bailing out here
+    // left the largest surfaces — the ones most likely to cross a hill — flat.
+    const huge = [[0, 0], [900, 0], [900, 700], [0, 700]];
+    const pieces = G.tileRing(huge, 6);
+    assert(pieces.length > 100, `a huge polygon was left as ${pieces.length} piece(s)`);
+    assert(pieces.length <= 1200, `${pieces.length} pieces is past the budget`);
+  });
+
+  if (hilly) {
+    const world = World.load(readFileSync(new URL(`../places/${hilly}.json`, import.meta.url), 'utf8'));
+    const P = world.place;
+    const ground = (x, y) => P.groundAt(x, y);
+
+    test('nothing built floats above the ground or is swallowed by it', () => {
+      const bad = [];
+      for (const e of world.entities()) {
+        if (!['structure', 'wall'].includes(e.type)) continue;
+        const ring = world.ringOf(e);
+        if (!ring || ring.length < 3) continue;
+        const span = G.groundSpan(ring, ground);
+        if (!span) continue;
+        if (e.zBase > span.lo + 0.01) bad.push(`${e.name || e.id} floats ${(e.zBase - span.lo).toFixed(1)} m`);
+        if (e.zTop < span.hi + 0.01) bad.push(`${e.name || e.id} is buried ${(span.hi - e.zTop).toFixed(1)} m`);
+      }
+      eq(bad.slice(0, 3).join('; '), '', `${bad.length} of them, on 281 m of relief`);
+    });
+
+    test('a flat thing follows the hill instead of spanning it', () => {
+      const FLAT = ['path', 'road', 'surface', 'parcel', 'drain', 'water', 'stream'];
+      const cell = Math.max(8, Math.min(16, (P.terrain?.cell ?? 24) / 2));
+      let planeWorst = 0, drapedWorst = 0;
+      for (const e of world.entities()) {
+        if (!FLAT.includes(e.type)) continue;
+        const ring = world.ringOf(e);
+        if (!ring || ring.length < 3) continue;
+        const off = (e.zTop - ground(ring[0][0], ring[0][1]));
+        for (const piece of G.tileRing(ring, cell)) {
+          const idx = G.triangulate(piece);
+          for (let i = 0; i < idx.length; i += 3) {
+            const t = [idx[i], idx[i + 1], idx[i + 2]].map((k) => {
+              const q = piece[k];
+              return [q[0], q[1], ground(q[0], q[1]) + off];
+            });
+            for (const [u, v] of [[0.25, 0.25], [0.5, 0.25], [0.25, 0.5]]) {
+              const x = t[0][0] + u * (t[1][0] - t[0][0]) + v * (t[2][0] - t[0][0]);
+              const y = t[0][1] + u * (t[1][1] - t[0][1]) + v * (t[2][1] - t[0][1]);
+              const gz = ground(x, y);
+              planeWorst = Math.max(planeWorst, Math.abs(e.zTop - gz));
+              const d = ((t[1][1] - t[2][1]) * (t[0][0] - t[2][0]) + (t[2][0] - t[1][0]) * (t[0][1] - t[2][1]));
+              if (Math.abs(d) < 1e-12) continue;
+              const l1 = ((t[1][1] - t[2][1]) * (x - t[2][0]) + (t[2][0] - t[1][0]) * (y - t[2][1])) / d;
+              const l2 = ((t[2][1] - t[0][1]) * (x - t[2][0]) + (t[0][0] - t[2][0]) * (y - t[2][1])) / d;
+              const z = l1 * t[0][2] + l2 * t[1][2] + (1 - l1 - l2) * t[2][2];
+              drapedWorst = Math.max(drapedWorst, Math.abs(z - off - gz));
+            }
+          }
+        }
+      }
+      assert(planeWorst > 50, `the flat-plane failure should be enormous here, was ${planeWorst.toFixed(1)} m`);
+      assert(drapedWorst < 5, `draped surfaces still miss the ground by ${drapedWorst.toFixed(1)} m`);
+      console.log(`      (one plane: ${planeWorst.toFixed(0)} m off the ground · draped: ${drapedWorst.toFixed(1)} m)`);
+    });
+  }
+});
+
 // ============================================================ NO DANGLING ===
 // captureView() and openAIPanel() were both deleted with the panel that used
 // them, while three call sites stayed behind. Every one threw a ReferenceError

@@ -257,7 +257,12 @@ export function osmToPlace(osm, { key, name, bbox, terrain = null, fetchedAt = n
           stats.water++;
         } else if (tags.building) {
           add({ id: `osm_r${el.id}_${mi}`, type: 'structure', name: tags.name || 'Building',
-                footprint: trimmedM, zBase: zM, zTop: zM + buildingHeight(tags).height,
+                footprint: trimmedM,
+                ...(() => {
+                  const sp = G.groundSpan(trimmedM, (x, y) => place.groundAt(x, y)) || { lo: zM, hi: zM };
+                  const hgt = buildingHeight(tags).height;
+                  return { zBase: sp.lo, zTop: sp.hi + hgt, height: hgt, groundFall: +(sp.hi - sp.lo).toFixed(2) };
+                })(),
                 collision: 'solid', sim: { permeability: 0, roughness: 0.02 },
                 props: { heightBasis: buildingHeight(tags).basis, osm: { type: el.type, id: el.id, tags: slimTags(tags) } } }, el);
           stats.buildings++;
@@ -280,8 +285,14 @@ export function osmToPlace(osm, { key, name, bbox, terrain = null, fetchedAt = n
       const trimmed = clipRing(ring, window_);
       if (!trimmed || G.area(trimmed) < 2) { stats.skipped++; continue; }
       const c = G.centroid(trimmed);
-      const z = place.groundAt(c[0], c[1]);
       const { height, basis } = buildingHeight(tags);
+      // A building is level; the ground under it is not. Taking one height at
+      // the centroid leaves the downhill corner in mid-air and the uphill
+      // corner buried. Sit the foundation on the LOWEST ground it covers and
+      // carry the roof clear of the HIGHEST, which is what a real building on a
+      // slope does: a plinth downhill, a short elevation uphill.
+      const span = G.groundSpan(trimmed, (x, y) => place.groundAt(x, y)) || { lo: place.groundAt(c[0], c[1]), hi: place.groundAt(c[0], c[1]) };
+      const fall = span.hi - span.lo;
       const roofH = parseFloat(tags['roof:height']);
       const roof = {
         shape: tags['roof:shape'] || null,
@@ -294,7 +305,9 @@ export function osmToPlace(osm, { key, name, bbox, terrain = null, fetchedAt = n
       add({
         type: 'structure',
         name: tags.name || address || 'Building',
-        footprint: trimmed, zBase: z, zTop: z + height,
+        footprint: trimmed, zBase: span.lo, zTop: span.hi + height,
+        // the height it was given, kept apart from the extent it now occupies
+        height, groundFall: +fall.toFixed(2),
         use: tags.amenity || tags.shop || tags.office || tags.building,
         material: tags['building:material'] || tags['building'] || null,
         collision: 'solid', sim: { permeability: 0, roughness: 0.02 },
@@ -388,7 +401,8 @@ export function osmToPlace(osm, { key, name, bbox, terrain = null, fetchedAt = n
         }, el);
         stats.water++;
       } else if (tags.barrier) {
-        add({ type: 'wall', name: tags.barrier, footprint: trimmed, zBase: z, zTop: z + 2, collision: 'solid' }, el);
+        const wallSpan = G.groundSpan(trimmed, (x, y) => place.groundAt(x, y)) || { lo: z, hi: z };
+        add({ type: 'wall', name: tags.barrier, footprint: trimmed, zBase: wallSpan.lo, zTop: wallSpan.hi + 2, collision: 'solid' }, el);
         stats.walls++;
       } else {
         const permeable = /grass|wood|forest|meadow|scrub|farmland|park|recreation|cemetery|allotments|village_green/.test(`${tags.landuse} ${tags.natural} ${tags.leisure}`);
