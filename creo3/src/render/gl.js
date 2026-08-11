@@ -71,6 +71,7 @@ const DARK = {
   drain: [0.25, 0.36, 0.44],
   water: [0.20, 0.42, 0.56],
   waterEdge: [0.44, 0.78, 0.98],
+  boundary: [0.95, 0.35, 0.25],
   tree: [0.28, 0.44, 0.26],
   treeTrunk: [0.30, 0.25, 0.20],
   surface: [0.40, 0.44, 0.31],
@@ -138,6 +139,7 @@ const LIGHT = {
   treeTrunk: [0.42, 0.33, 0.25],
   contour: [0.28, 0.24, 0.16],
   contourIndex: [0.42, 0.27, 0.06],
+  boundary: [0.72, 0.10, 0.05],
   select: [0.08, 0.40, 0.36],
   highlight: [0.82, 0.42, 0.08],
   observation: [0.68, 0.42, 0.04],
@@ -320,6 +322,21 @@ export class Renderer {
         T.draped(ring, ground, flatOffset(e) + 0.02, col, 0.18, cell, grid);
         L.ring(ring, e.zTop + 0.06, col, 0.95);
         this.buildPin(S, L, e, ring);
+      } else if (e.type === 'parcel') {
+        // A BOUNDARY IS A LINE.
+        //
+        // Drawn as a filled polygon it sat three centimetres above the terrain,
+        // and at seven hundred metres the depth buffer cannot separate three
+        // centimetres — so the site read as a field of grey hatching, which was
+        // z-fighting rather than bad geometry (the triangulation is exact to
+        // 0.0% over 120,104 m²). It is also simply wrong: no surveyor fills a
+        // parcel in. What a boundary needs is to be UNMISTAKABLE and to lie on
+        // the ground, at any distance, with the land inside it still visible.
+        const lift = flatOffset(e) + 0.35;
+        L.ring(ring, 0, PALETTE.boundary, 1, ground, lift);
+        L.ring(ring, 0, PALETTE.boundary, 0.55, ground, lift + 0.9);
+        // a hair of tone inside, only enough to say which side is the site
+        T.draped(ring, ground, flatOffset(e), PALETTE.boundary, 0.055, cell, grid);
       } else if (e.type === 'water' || e.type === 'stream') {
         // A creek is three metres across. From three hundred metres up that is a
         // third of a pixel, which is why the water has been invisible: it was
