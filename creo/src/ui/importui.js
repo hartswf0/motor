@@ -8,6 +8,7 @@
 // dense European quarter runs to several megabytes and localStorage would throw.
 
 import { importPlace, geocode } from '../import/place.js';
+import { parseCoordinates, coordinatePlace } from '../import/geocode.js';
 import { World } from '../core/world.js';
 
 const DB = 'creo-places';
@@ -71,11 +72,11 @@ export function openImportPanel({ anchorEl, onLoaded, toast }) {
 
   const label = document.createElement('div');
   label.className = 'menuLabel';
-  label.textContent = 'Take me anywhere — any street, district or village';
+  label.textContent = 'Take me anywhere — a name, a coordinate, or a pasted map link';
 
   const input = document.createElement('input');
   input.className = 'nameInput';
-  input.placeholder = 'e.g. Kibera Nairobi · Jordaan Amsterdam · your street';
+  input.placeholder = 'a street, a village — or 25.7867, -80.1750';
   input.setAttribute('aria-label', 'Search for a place');
 
   const status = document.createElement('div');
@@ -96,6 +97,18 @@ export function openImportPanel({ anchorEl, onLoaded, toast }) {
     searching = true;
     results.replaceChildren();
     say('searching…');
+    // A coordinate is an answer, not a question: go straight there rather than
+    // asking a geocoder to guess which "25.7867" was meant.
+    const at = parseCoordinates(q);
+    if (at) {
+      say(`${at.label} — read as ${at.how}`);
+      const b = document.createElement('button');
+      b.innerHTML = `Go to ${escapeHTML(at.label)}<span class="sub">exact coordinate · 900 m around it</span>`;
+      b.onclick = () => pull(coordinatePlace(at, 900));
+      results.append(b);
+      searching = false;
+      return;
+    }
     try {
       const hits = await geocode(q, { limit: 6 });
       if (!hits.length) { say(`nothing found for “${q}”`); searching = false; return; }
@@ -135,7 +148,9 @@ export function openImportPanel({ anchorEl, onLoaded, toast }) {
       });
       panel.remove();
       onLoaded(world, key, name);
-      toast(`${name} — ${stats.buildings} buildings, ${stats.roads + stats.paths} ways, ${world.place.meta?.relief || 0} m relief.`);
+      toast(world.place.meta?.sparse
+        ? `${name} — nothing is mapped here yet. The ground is real: ${world.place.meta?.relief || 0} m of relief. Draw and say what belongs.`
+        : `${name} — ${stats.buildings} buildings, ${stats.roads + stats.paths} ways, ${world.place.meta?.relief || 0} m relief.`);
     } catch (err) {
       input.disabled = false;
       say(String(err.message).slice(0, 160));

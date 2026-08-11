@@ -19,6 +19,7 @@ import { certify } from '../src/world/certificate.js';
 import { lexiconCollisions } from '../src/lang/lexicon.js';
 import { repairFor } from '../src/ai/operator.js';
 import { FLAT_ORDER, Renderer } from '../src/render/gl.js';
+import { parseCoordinates, coordinatePlace } from '../src/import/geocode.js';
 import { toGeoJSON, fromGeoJSON } from '../src/world/export.js';
 import { consequenceOf } from '../src/sim/consequence.js';
 import { runWater } from '../src/sim/water.js';
@@ -1280,6 +1281,64 @@ group('slopes', () => {
       console.log(`      (one plane: ${planeWorst.toFixed(0)} m off the ground · draped: ${drapedWorst.toFixed(1)} m)`);
     });
   }
+});
+
+// ============================================================= LOCATING ====
+// "watson island" was answered with "nothing usable here — OpenStreetMap has no
+// buildings or roads mapped in this area". That is the map talking, not the
+// world. An unmapped island is still an island, and a person who already knows
+// the coordinate should not have to invent a searchable name for it.
+
+group('locating', () => {
+  test('a coordinate is a place name', () => {
+    const same = (r) => r && Math.abs(r.lat - 25.7867) < 0.001 && Math.abs(r.lon + 80.1750) < 0.001;
+    const forms = [
+      '25.7867, -80.1750',
+      '25.7867 -80.1750',
+      '25.7867N 80.1750W',
+      '25°47\'12"N 80°10\'30"W',
+      'https://www.google.com/maps/@25.7867,-80.1750,17z',
+      'geo:25.7867,-80.1750',
+      '  25.7867 , -80.1750  ',
+    ];
+    for (const f of forms) {
+      const r = parseCoordinates(f);
+      assert(same(r), `did not read “${f}” — got ${r ? r.label : 'nothing'}`);
+    }
+    eq(parseCoordinates('-33.8688, 151.2093').label, '33.86880°S 151.20930°E', 'southern and eastern');
+  });
+
+  test('an ordinary search is still an ordinary search', () => {
+    // the parser must never swallow a name, or every place becomes a coordinate
+    for (const q of ['watson island', 'Kibera Nairobi', '1600 Pennsylvania Ave',
+      'Jordaan Amsterdam', 'Boone', 'Rue 24', 'Sector 5']) {
+      eq(parseCoordinates(q), null, `“${q}” was mistaken for a coordinate`);
+    }
+    // and nonsense coordinates are refused rather than clamped
+    eq(parseCoordinates('91.5, -80.1'), null, 'latitude past the pole');
+    eq(parseCoordinates('25.7, -200'), null, 'longitude past the meridian');
+  });
+
+  test('a coordinate opens a window without asking anyone', () => {
+    const at = parseCoordinates('25.7867, -80.1750');
+    const place = coordinatePlace(at, 900);
+    const [s0, w0, n0, e0] = place.bbox;
+    assert(n0 > s0 && e0 > w0, 'the window is inside out');
+    const heightM = (n0 - s0) * 111320;
+    const widthM = (e0 - w0) * 111320 * Math.cos((at.lat * Math.PI) / 180);
+    assert(Math.abs(heightM - 900) < 20, `window is ${heightM.toFixed(0)} m tall, wanted 900`);
+    assert(Math.abs(widthM - 900) < 20, `window is ${widthM.toFixed(0)} m wide, wanted 900`);
+  });
+
+  test('an unmapped place still opens, and says so', () => {
+    // Somewhere with terrain and nothing built. The refusal used to be thrown
+    // before the ground was ever looked at.
+    const key = 'watson-island-miami-united-states';
+    if (!existsSync(new URL(`../places/${key}.json`, import.meta.url))) return;
+    const w = World.load(readFileSync(new URL(`../places/${key}.json`, import.meta.url), 'utf8'));
+    assert(w.place.terrain, 'the ground is what makes an unmapped place usable');
+    assert(w.entities().length > 0, 'Watson Island is in fact mapped — it should never have been refused');
+  });
 });
 
 // ============================================================ NO DANGLING ===

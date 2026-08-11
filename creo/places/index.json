@@ -148,5 +148,31 @@
     },
     "relief": 155,
     "source": "OpenStreetMap (ODbL)"
+  },
+  {
+    "key": "watson-island-miami-united-states",
+    "name": "Watson Island, Miami, United States",
+    "bbox": [
+      25.7810176,
+      -80.1793368,
+      25.7879076,
+      -80.1717505
+    ],
+    "fetchedAt": "2026-08-11T05:37:22.058Z",
+    "scale": "neighbourhood",
+    "counts": {
+      "buildings": 45,
+      "roads": 147,
+      "paths": 88,
+      "water": 9,
+      "surfaces": 19,
+      "trees": 0,
+      "walls": 7,
+      "skipped": 1,
+      "markers": 23,
+      "ocean": 1
+    },
+    "relief": 29.3,
+    "source": "OpenStreetMap (ODbL)"
   }
 ]

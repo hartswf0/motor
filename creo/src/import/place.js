@@ -55,7 +55,11 @@ export async function importPlace(opts = {}) {
   const { json, mirror } = await fetchOSM(bbox, { fetchImpl, log });
   log(`${json.elements.length} OSM elements`);
   if (!json.elements.length) {
-    throw new Error('OpenStreetMap has nothing mapped here — try somewhere else, or a wider area');
+    // Nobody has mapped this. That is a fact about the map, not about the
+    // place — and it is often the whole point of going: an empty site, an
+    // island, a stretch of coast before anything is on it. Carry on with the
+    // ground, and say plainly that everything here will be the person's own.
+    log('nobody has mapped this yet — opening the ground alone');
   }
 
   // 3. the ground it is built on
@@ -75,8 +79,19 @@ export async function importPlace(opts = {}) {
   const { world, stats } = osmToPlace(json, { key, name: name || key, bbox, terrain, fetchedAt, mirror });
   world.place.meta.geocoded = resolved ? { query: opts.query, match: resolved.name, osm: resolved.osm } : null;
 
-  if (!stats.buildings && !stats.roads) {
-    throw new Error('nothing usable here — OpenStreetMap has no buildings or roads mapped in this area');
+  // An unmapped place is still a place. Refusing to open ground because nobody
+  // has drawn a building on it was the map talking, not the world: an island, a
+  // site before it is built, a stretch of coast — these are exactly the places
+  // worth standing in, and the terrain, the water and the coastline are real
+  // whether or not OpenStreetMap has been there. What CREO must never do is
+  // pretend the emptiness is data, so it says plainly what is and is not known.
+  const built = Object.values(stats).reduce((a, b) => a + b, 0) - (stats.skipped || 0);
+  if (!built && !terrain) {
+    throw new Error('nothing here at all — no map data and no elevation for this spot');
+  }
+  world.place.meta.sparse = !stats.buildings && !stats.roads;
+  if (world.place.meta.sparse) {
+    log('OpenStreetMap has nothing built here — opening the ground itself');
   }
   log(`built: ${Object.entries(stats).filter(([, v]) => v).map(([k, v]) => `${v} ${k}`).join(', ')}`);
   return { world, stats, bbox, key, name: name || key, resolved, fetchedAt, span };
