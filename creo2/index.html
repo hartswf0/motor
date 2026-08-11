@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>CREO</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<canvas id="world" aria-label="The place. Drag to look around, tap to select."></canvas>
+
+<!-- Everything below is chrome. It appears only when it has something to say. -->
+<header id="top">
+  <button id="placeChip" class="chip" aria-haspopup="listbox">
+    <span id="placeName">Baba Dogo</span><span class="caret">▾</span>
+  </button>
+  <button id="findChip" class="chip" aria-label="Go to something in this place" title="Go to something here (G)">⌕</button>
+  <div id="branchChip" class="chip branch" hidden>
+    <span id="branchName">As it is</span><span class="caret">▾</span>
+  </div>
+  <div class="spacer"></div>
+  <button id="authorChip" class="chip unset" aria-label="Who you are">
+    <span id="authorName">add your name</span>
+  </button>
+  <button id="undoBtn" class="icon" title="Undo" aria-label="Undo" disabled>↶</button>
+  <button id="redoBtn" class="icon" title="Redo" aria-label="Redo" disabled>↷</button>
+</header>
+
+<!-- Aiming point for anyone working without a pointing device. -->
+<div id="crosshair" hidden aria-hidden="true"></div>
+
+<!-- Where you are, in a place you can see all of. Tap it to go. -->
+<div id="plan" hidden>
+  <canvas id="planCanvas" aria-label="Plan of the whole place. Tap to move there."></canvas>
+  <button id="exploreBtn" title="Drag the window to ground you have not loaded (X)" aria-label="Explore beyond this ground">⊕</button>
+</div>
+
+<!-- Explore controls sit OUTSIDE the plan: inside it they were clipped by its
+     own overflow, and a control you cannot see is a control you do not have. -->
+<div id="exploreHint" hidden>
+    <span id="exploreWhere"></span>
+    <button id="exploreGo" class="btn primary" hidden></button>
+  </div>
+
+<div id="viewTools">
+  <button id="fitBtn" class="icon small" title="Show the whole place (F)" aria-label="Show the whole place">⤢</button>
+  <button id="planBtn" class="icon small" title="Plan (M)" aria-label="Toggle the plan">▣</button>
+  <button id="layersBtn" class="icon small" title="What to show" aria-label="Layers">◈</button>
+  <button id="rainBtn" class="icon small" title="Simulate heavy rain (R) — rivers and ponds are always shown" aria-label="Simulate rain">☂</button>
+  <button id="exportBtn" class="icon small" title="Take it away — export" aria-label="Export">↧</button>
+  <button id="helpBtn" class="icon small" title="Help (?)" aria-label="Help">?</button>
+</div>
+
+<div id="waterLegend" hidden>
+  <div class="legendTitle">Flood simulation — an hour of heavy rain</div>
+  <div class="legendScale"><i style="background:#6bb8eb"></i><i style="background:#4c9ad9"></i><i style="background:#2f7bc4"></i><i style="background:#1f5ca8"></i></div>
+  <div class="legendEnds"><span>5&nbsp;cm</span><span id="legendMax">45&nbsp;cm</span></div>
+  <div class="legendNote" id="legendNote"></div>
+  <div class="legendNote">This is temporary water on top of the world. Rivers, ponds and the sea are permanent and always drawn.</div>
+</div>
+
+<div id="youAreHere" class="pill ghosted" hidden>you are here</div>
+<!-- Real places carry their licence where a person can see it, not in a file. -->
+<div id="attribution" hidden></div>
+
+<!-- Circle or tap something and it becomes the subject: everything you say
+     after that is about it, and it can answer for itself. -->
+<div id="tools" hidden role="region" aria-label="About what you chose">
+  <div class="subjectHead">
+    <div id="toolTitle" class="toolTitle"></div>
+    <button id="subjectClose" class="icon small" aria-label="Let it go">✕</button>
+  </div>
+  <div id="subjectFacts" class="subjectFacts"></div>
+  <div class="row" id="toolRow"></div>
+  <div id="subjectThread" class="thread" hidden></div>
+  <div class="subjectAsk">
+    <input id="subjectInput" type="text" autocomplete="off" enterkeyhint="send"
+           placeholder="Ask about this" aria-label="Ask about what you chose">
+    <button id="subjectSend" class="icon small" aria-label="Ask">↑</button>
+  </div>
+</div>
+
+<!-- Shown once, on the main page, when nothing can think yet. -->
+<div id="setup" hidden>
+  <div class="setupHead">Let CREO think<button id="setupClose" class="icon small" aria-label="Not now">✕</button></div>
+  <p>CREO already answers from the world without one. A key adds open-ended
+     questions and lets it work the interface for you. It stays in this browser.</p>
+  <input id="setupKey" type="password" placeholder="sk-…" aria-label="API key">
+  <div class="setupRow">
+    <select id="setupModel" aria-label="Model"><option>— add a key, then choose —</option></select>
+    <button id="setupRefresh" class="tool">Refresh</button>
+  </div>
+  <div id="setupStatus"></div>
+  <button id="setupDone" class="btn primary">Done</button>
+</div>
+
+<!-- The proposal: shown before anything becomes real. -->
+<section id="proposal" hidden aria-live="polite">
+  <div class="head">
+    <h2 id="propTitle"></h2>
+    <button id="propClose" class="icon" aria-label="Discard">✕</button>
+  </div>
+  <p id="propSummary"></p>
+  <div id="propCert" class="cert"></div>
+  <div id="propImpact" class="impact"></div>
+  <div id="propAlts" class="alts"></div>
+  <div class="actions">
+    <button id="propDiscard" class="btn ghost">Discard</button>
+    <button id="propCommit" class="btn primary">Put it in the world</button>
+  </div>
+</section>
+
+<!-- The answer panel for questions asked of the place. -->
+<section id="answer" hidden aria-live="polite">
+  <div class="head">
+    <h2 id="ansTitle">The place says</h2>
+    <button id="ansClose" class="icon" aria-label="Close">✕</button>
+  </div>
+  <div id="ansBody"></div>
+</section>
+
+<!-- Branches: futures that coexist. -->
+<section id="branches" hidden>
+  <div class="head"><h2>Futures</h2><button id="brClose" class="icon" aria-label="Close">✕</button></div>
+  <div id="branchList"></div>
+  <div class="actions"><button id="compareBtn" class="btn ghost">Compare all</button></div>
+</section>
+
+<!-- The one invitation. -->
+<footer id="say">
+  <button id="modeDraw" class="icon mode" title="Draw an area or a line" aria-label="Draw">◌</button>
+  <div id="sayWrap">
+    <button id="modeChip" aria-haspopup="menu" title="How hard to think — hold for the machinery">✦ Auto</button>
+    <input id="sayInput" type="text" autocomplete="off" enterkeyhint="go"
+           placeholder="Say something about this place" aria-label="Say something about this place">
+  </div>
+  <button id="micBtn" class="icon mic" title="Speak" aria-label="Speak">◉</button>
+</footer>
+
+<!-- What it is doing, in the world's own terms. Not a spinner. -->
+<div id="working" hidden>
+  <span id="workingMode"></span>
+  <span id="workingStep"></span>
+  <button id="workingStop" aria-label="Stop">■</button>
+</div>
+
+<div id="toast" class="toast" hidden role="status"></div>
+<div id="labels" aria-hidden="false"></div>
+
+<script type="module" src="src/ui/app.js"></script>
+</body>
+</html>

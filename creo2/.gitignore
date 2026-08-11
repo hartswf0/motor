@@ -1,0 +1,6 @@
+
+# Imported places are pulled on demand. Only the small Baba Dogo fixture that
+# the test suite runs against is committed.
+places/*.json
+!places/babadogo.json
+!places/index.json

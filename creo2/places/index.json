@@ -1,0 +1,178 @@
+[
+  {
+    "key": "venice",
+    "name": "Cannaregio, Venice",
+    "bbox": [
+      45.43,
+      12.32,
+      45.44,
+      12.34
+    ],
+    "fetchedAt": "2026-08-10T19:30:00.770Z",
+    "scale": "district",
+    "counts": {
+      "buildings": 1811,
+      "roads": 4,
+      "paths": 3138,
+      "water": 189,
+      "surfaces": 87,
+      "trees": 439,
+      "walls": 1020,
+      "skipped": 230,
+      "markers": 1801
+    },
+    "relief": 13.3,
+    "source": "OpenStreetMap (ODbL)"
+  },
+  {
+    "key": "shore",
+    "name": "Nyali shore, Mombasa",
+    "bbox": [
+      -4.0662288896873875,
+      39.67374292969208,
+      -4.043771110312612,
+      39.69625707030792
+    ],
+    "fetchedAt": "2026-08-10T19:43:12.723Z",
+    "scale": "district",
+    "counts": {
+      "buildings": 1603,
+      "roads": 350,
+      "paths": 19,
+      "water": 6,
+      "surfaces": 101,
+      "trees": 83,
+      "walls": 7,
+      "skipped": 5,
+      "markers": 97,
+      "ocean": 1
+    },
+    "relief": 227.3,
+    "source": "OpenStreetMap (ODbL)"
+  },
+  {
+    "key": "babadogo",
+    "name": "Baba Dogo, Nairobi",
+    "bbox": [
+      -1.2395,
+      36.8745,
+      -1.2325,
+      36.8835
+    ],
+    "fetchedAt": "2026-08-10T19:49:52.569Z",
+    "scale": "neighbourhood",
+    "counts": {
+      "buildings": 394,
+      "roads": 80,
+      "paths": 1,
+      "water": 1,
+      "surfaces": 5,
+      "trees": 0,
+      "walls": 8,
+      "skipped": 0,
+      "markers": 18
+    },
+    "relief": 54.7,
+    "source": "OpenStreetMap (ODbL)"
+  },
+  {
+    "key": "ravello-ravello-italia",
+    "name": "Ravello, Ravello, Italia",
+    "bbox": [
+      40.660283560887535,
+      14.596710734972996,
+      40.66657173911247,
+      14.605000465027002
+    ],
+    "fetchedAt": "2026-08-11T01:43:55.334Z",
+    "scale": "neighbourhood",
+    "counts": {
+      "buildings": 20,
+      "roads": 9,
+      "paths": 14,
+      "water": 1,
+      "surfaces": 3,
+      "trees": 0,
+      "walls": 0,
+      "skipped": 0,
+      "markers": 3
+    },
+    "relief": 281.2,
+    "source": "OpenStreetMap (ODbL)"
+  },
+  {
+    "key": "boone-boone-united-states",
+    "name": "Boone, Boone, United States",
+    "bbox": [
+      36.204332249712536,
+      -81.6683762524834,
+      36.212417050287456,
+      -81.65835634751662
+    ],
+    "fetchedAt": "2026-08-11T02:09:39.721Z",
+    "scale": "neighbourhood",
+    "counts": {
+      "buildings": 165,
+      "roads": 143,
+      "paths": 92,
+      "water": 6,
+      "surfaces": 43,
+      "trees": 0,
+      "walls": 4,
+      "skipped": 0,
+      "markers": 10
+    },
+    "relief": 89,
+    "source": "OpenStreetMap (ODbL)"
+  },
+  {
+    "key": "watauga-lake-carter-county-united-states",
+    "name": "Watauga Lake, Carter County, United States",
+    "bbox": [
+      36.32529199971254,
+      -82.03484466904172,
+      36.33337680028746,
+      -82.02480923095828
+    ],
+    "fetchedAt": "2026-08-11T02:18:00.574Z",
+    "scale": "neighbourhood",
+    "counts": {
+      "buildings": 0,
+      "roads": 7,
+      "paths": 0,
+      "water": 12,
+      "surfaces": 0,
+      "trees": 0,
+      "walls": 0,
+      "skipped": 1
+    },
+    "relief": 155,
+    "source": "OpenStreetMap (ODbL)"
+  },
+  {
+    "key": "watson-island-miami-united-states",
+    "name": "Watson Island, Miami, United States",
+    "bbox": [
+      25.7810176,
+      -80.1793368,
+      25.7879076,
+      -80.1717505
+    ],
+    "fetchedAt": "2026-08-11T05:37:22.058Z",
+    "scale": "neighbourhood",
+    "counts": {
+      "buildings": 45,
+      "roads": 147,
+      "paths": 88,
+      "water": 9,
+      "surfaces": 19,
+      "trees": 0,
+      "walls": 7,
+      "skipped": 1,
+      "markers": 23,
+      "ocean": 1
+    },
+    "relief": 29.3,
+    "source": "OpenStreetMap (ODbL)"
+  }
+]
