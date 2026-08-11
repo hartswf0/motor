@@ -143,27 +143,58 @@ function median(values) {
  * detail between the original samples; what becomes real is whatever is then
  * deliberately carved into it.
  */
-export function refineTerrain(place, targetCell = 3) {
+export function refineTerrain(place, targetCell = 3, around = null, radius = 90) {
   const t = place.terrain;
   if (!t) throw new Error('there is no ground here to refine');
   if (t.cell <= targetCell * 1.2) return { refined: false, cell: t.cell, samples: t.data.length };
 
+  // REFINE A WINDOW, NOT A COUNTY.
+  //
+  // The ground now runs kilometres, and refining all of it to building scale is
+  // 5,764,801 samples and 28.8 MB — it locked the tab solid the first time a
+  // house was dropped on a wide place. A building needs fine ground where the
+  // building is; four hundred metres away it needs none. So this refines a
+  // window around the work and leaves the rest as it was.
+  //
+  // The two resolutions are NOT two surfaces: the fine window replaces that part
+  // of the one ground, and everything still reads through the same heightAt.
+  const bounds = around
+    ? [around[0] - radius, around[1] - radius, around[0] + radius, around[1] + radius]
+    : t.bounds;
+  const clipped = [
+    Math.max(t.bounds[0], bounds[0]), Math.max(t.bounds[1], bounds[1]),
+    Math.min(t.bounds[2], bounds[2]), Math.min(t.bounds[3], bounds[3]),
+  ];
+  const wanted = ((clipped[2] - clipped[0]) / targetCell + 1) * ((clipped[3] - clipped[1]) / targetCell + 1);
+  const MAX = 400000;
+  if (wanted > MAX) {
+    return {
+      refined: false, refused: true, cell: t.cell,
+      reason: `recording ${targetCell} m detail over ${Math.round(clipped[2] - clipped[0])} m `
+        + `needs ${Math.round(wanted / 1000)}k samples — ask for a smaller area`,
+    };
+  }
+
   const Heightfield = t.constructor;
-  const fine = new Heightfield(t.bounds, targetCell);
+  const fine = new Heightfield(clipped, targetCell);
   for (let j = 0; j < fine.ny; j++) {
     for (let i = 0; i < fine.nx; i++) {
-      const x = fine.bounds[0] + i * fine.cell;
-      const y = fine.bounds[1] + j * fine.cell;
-      fine.data[j * fine.nx + i] = t.heightAt(x, y);
+      const x = fine.bounds[0] + i * fine.cell, y = fine.bounds[1] + j * fine.cell;
+      const k = fine.idx(i, j);
+      fine.data[k] = t.heightAt(x, y);
+      fine.prov[k] = 1;                       // INTERPOLATED — declared, always
     }
   }
+  // the coarse ground remains, and the fine window sits inside it
   place.terrain = fine;
+  place.coarseGround = t;
   place.meta = place.meta || {};
   place.meta.refined = {
     from: +t.cell.toFixed(1), to: targetCell,
+    over: `${Math.round(clipped[2] - clipped[0])}×${Math.round(clipped[3] - clipped[1])} m`,
     note: 'heights between the original samples are interpolation, not survey',
   };
-  return { refined: true, from: t.cell, cell: fine.cell, samples: fine.data.length };
+  return { refined: true, from: t.cell, cell: fine.cell, samples: fine.data.length, bounds: clipped };
 }
 
 /**

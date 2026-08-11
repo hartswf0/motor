@@ -174,5 +174,29 @@
     },
     "relief": 504.7,
     "source": "OpenStreetMap (ODbL)"
+  },
+  {
+    "key": "36-28727-n-81-92510-w",
+    "name": "36.28727°N 81.92510°W",
+    "bbox": [
+      36.28322426637921,
+      -81.93011223492277,
+      36.29130906695413,
+      -81.92008220952167
+    ],
+    "fetchedAt": "2026-08-11T19:32:01.755Z",
+    "scale": "neighbourhood",
+    "counts": {
+      "buildings": 5,
+      "roads": 2,
+      "paths": 0,
+      "water": 4,
+      "surfaces": 0,
+      "trees": 0,
+      "walls": 0,
+      "skipped": 1
+    },
+    "relief": 712.8,
+    "source": "OpenStreetMap (ODbL)"
   }
 ]

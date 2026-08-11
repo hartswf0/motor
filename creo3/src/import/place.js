@@ -69,18 +69,6 @@ export async function importPlace(opts = {}) {
   }
   const key = opts.key || slug(name || opts.query);
 
-  // 2. what is built there
-  log('reading OpenStreetMap…');
-  const { json, mirror } = await fetchOSM(bbox, { fetchImpl, log });
-  log(`${json.elements.length} OSM elements`);
-  if (!json.elements.length) {
-    // Nobody has mapped this. That is a fact about the map, not about the
-    // place — and it is often the whole point of going: an empty site, an
-    // island, a stretch of coast before anything is on it. Carry on with the
-    // ground, and say plainly that everything here will be the person's own.
-    log('nobody has mapped this yet — opening the ground alone');
-  }
-
   // 3. THE GROUND IS WIDER THAN THE DETAIL.
   //
   // A Place's extent and the extent of its CONTENTS are different things, and
@@ -118,7 +106,39 @@ export async function importPlace(opts = {}) {
     }
   }
 
-  // 4. become a place
+
+  // 3b. STAND ON IT NOW.
+  //
+  // Elevation takes seconds; Overpass can take minutes, and on a bad day it
+  // answers 504 and the retry ladder runs for three. Measured on one real
+  // coordinate: 179.7 seconds, of which the ground was ready in about five.
+  // Waiting for the buildings before showing the hill is what made importing
+  // feel broken — so the ground opens first and the built things arrive into
+  // it. The place is honest about which state it is in.
+  if (opts.onGround && terrain) {
+    try {
+      const { world: bare } = osmToPlace({ elements: [] },
+        { key, name: name || key, bbox, terrain, fetchedAt: new Date().toISOString(), mirror: null });
+      bare.place.meta.detailBounds = detailBounds;
+      bare.place.meta.anchor = projection.anchor;
+      bare.place.meta.pending = 'reading what is built here…';
+      opts.onGround(bare);
+    } catch (err) { log(`could not open the ground early (${String(err.message).slice(0, 40)})`); }
+  }
+
+  // 4. what is built there — slow, and no longer holding up the ground
+  log('reading OpenStreetMap…');
+  const { json, mirror } = await fetchOSM(bbox, { fetchImpl, log });
+  log(`${json.elements.length} OSM elements`);
+  if (!json.elements.length) {
+    // Nobody has mapped this. That is a fact about the map, not about the
+    // place — and it is often the whole point of going: an empty site, an
+    // island, a stretch of coast before anything is on it. Carry on with the
+    // ground, and say plainly that everything here will be the person's own.
+    log('nobody has mapped this yet — opening the ground alone');
+  }
+
+  // 5. become the full place
   const fetchedAt = new Date().toISOString();
   const { world, stats } = osmToPlace(json, { key, name: name || key, bbox, terrain, fetchedAt, mirror });
   world.place.meta.geocoded = resolved ? { query: opts.query, match: resolved.name, osm: resolved.osm } : null;
@@ -131,7 +151,7 @@ export async function importPlace(opts = {}) {
   // are in the terms everyone else uses
   world.place.meta.anchor = projection.anchor;
 
-  // 5. enough of the wider world to know where you are. Cheap, and explicitly
+  // 6. enough of the wider world to know where you are. Cheap, and explicitly
   // not survey — see toSkeleton.
   if (terrain && opts.skeleton !== false) {
     try {

@@ -568,7 +568,12 @@ function tap(x, y, additive) {
   const hit = pick(S.world, rayAt(x, y), { fidelity: S.fidelity });
   S.pointer = hit.point;
   // A body in hand goes where you tap, and the ground answers for it.
-  if (inHand && hit.point) { placeInHand(hit.point); return; }
+  if (inHand && hit.point) {
+    placeInHand(hit.point);
+    inHand = null;
+    $('dropBtn')?.classList.remove('on');
+    return;
+  }
   if (hit.entity) {
     if (additive) { S.selection.has(hit.entity.id) ? S.selection.delete(hit.entity.id) : S.selection.add(hit.entity.id); }
     else S.selection = new Set([hit.entity.id]);
@@ -1535,8 +1540,10 @@ function placeInHand(at, { rotation = null, level = 'balanced' } = {}) {
   if (!inHand) return false;
   try {
     if (S.world.place.terrain && S.world.place.terrain.cell > 4) {
-      const r = refineTerrain(S.world.place, 3);
-      if (r.refined) toast(`The ground here is recorded every ${r.from.toFixed(0)} m — too coarse for a building, so it has been read at ${r.cell} m. What lies between the original samples is interpolation, not survey.`);
+      // a window around the work, not the whole county — see refineTerrain
+      const r = refineTerrain(S.world.place, 3, at, 90);
+      if (r.refused) { toast(r.reason); return false; }
+      if (r.refined) toast(`The ground here is recorded every ${r.from.toFixed(0)} m — too coarse for a building, so ${r.samples.toLocaleString()} samples were read at ${r.cell} m around this spot. What lies between the original samples is interpolation, not survey.`);
     }
     // Which way to turn it is not a style question on a hillside: it is the
     // difference between cutting a terrace and cutting a canyon. If nobody
@@ -2150,6 +2157,7 @@ addEventListener('keydown', (ev) => {
   else if (k === 'f') frameAll();
   else if (k === 'g') openFindPanel();
   else if (k === 'x') $('exploreBtn').click();
+  else if (k === 'b') $('dropBtn').click();
   else if (k === 't') openThemeMenu();
   else if (k === '-' || k === '_') $('planOut').click();
   else if (k === '=' || k === '+') $('planIn').click();
@@ -2515,6 +2523,26 @@ function applyTheme(name) {
   return t;
 }
 $('themeChip').onclick = openThemeMenu;
+
+/**
+ * A BUILDING IN HAND.
+ *
+ * Seating one already worked, by saying it or by dropping a .glb — but both
+ * require knowing that it is possible. A place model whose most interesting
+ * operation is invisible has not offered it. This is the control: take a house,
+ * tap the ground, and the ground answers with what it costs.
+ */
+$('dropBtn').onclick = () => {
+  if (inHand) {
+    inHand = null;
+    $('dropBtn').classList.remove('on');
+    toast('Put it down.');
+    return;
+  }
+  takeInHand(boxBody({ name: 'House', width: 12, depth: 8, height: 3.2 }));
+  $('dropBtn').classList.add('on');
+  toast('A 12×8 m house, in hand. Tap the ground to seat it — it will be turned along the contour and the earthwork measured. Drop a .glb on the say bar for your own.');
+};
 
 $('planOut').onclick = () => { minimap.zoom(1.6); invalidate({ plan: true }); sayPlanReach(); };
 $('planIn').onclick = () => { minimap.zoom(1 / 1.6); invalidate({ plan: true }); sayPlanReach(); };

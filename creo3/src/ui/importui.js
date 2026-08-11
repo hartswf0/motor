@@ -9,6 +9,7 @@
 
 import { importPlace, geocode } from '../import/place.js';
 import { parseCoordinates, coordinatePlace } from '../import/geocode.js';
+import { slug as slugOf } from '../import/place.js';
 import { sampleTerrain } from '../import/terrain.js';
 import { localBounds } from '../import/osm.js';
 import { makeProjection } from '../core/geom.js';
@@ -136,6 +137,13 @@ export function openImportPanel({ anchorEl, onLoaded, toast }) {
     try {
       const { world, key, name, stats } = await importPlace({
         query: hit.short, bbox: hit.bbox, name: hit.short, metres: 900, log,
+        // the ground arrives in seconds and Overpass can take minutes: stand on
+        // the hill now, and let what is built on it appear when it appears
+        onGround: (bare) => {
+          panel.remove();
+          onLoaded(bare, `${slugOf(hit.short)}-ground`, hit.short);
+          toast('The ground is here. Reading what is built on it…');
+        },
       });
       say('saving…');
       const payload = world.save();
