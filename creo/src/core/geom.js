@@ -449,8 +449,11 @@ export function makeProjection(anchorLat, anchorLon) {
  *                       resolution rather than a taste for detail
  * @returns {number[][][]} pieces
  */
-export function tileRing(ring, cell = 12) {
+export function tileRing(ring, cell = 12, grid = null) {
   if (!ring || ring.length < 3) return [];
+  // A grid to align to: when the cells are the terrain's own cells, a piece
+  // never straddles two of them, and the surface under it is a single plane.
+  if (grid) return tileToGrid(ring, cell, grid[0], grid[1]);
   const b = bbox(ring);
   const w = b[2] - b[0], h = b[3] - b[1];
   if (w <= cell && h <= cell) return [ring];
@@ -538,3 +541,52 @@ export function groundSpan(ring, groundAt, samples = 6) {
   }
   return isFinite(lo) ? { lo, hi } : null;
 }
+
+/**
+ * Tile against a fixed lattice rather than the ring's own bounding box, and cut
+ * each cell along the diagonal the terrain mesh uses.
+ *
+ * This is what makes draping exact instead of close. Within one half-cell the
+ * drawn ground is a single flat triangle, so a flat piece laid on it coincides
+ * with it everywhere, not merely at the corners — no crease to cut, nothing to
+ * lift by, nothing left buried.
+ */
+export function tileToGrid(ring, span, ox, oy) {
+  const b = bbox(ring);
+  const i0 = Math.floor((b[0] - ox) / span), i1 = Math.floor((b[2] - ox) / span);
+  const j0 = Math.floor((b[1] - oy) / span), j1 = Math.floor((b[3] - oy) / span);
+  if ((i1 - i0 + 1) * (j1 - j0 + 1) > 4096) return tileRing(ring, span * 2);
+  const out = [];
+  for (let i = i0; i <= i1; i++) {
+    for (let j = j0; j <= j1; j++) {
+      const x0 = ox + i * span, y0 = oy + j * span;
+      const cellPiece = dedupeRing(clipToRect(ring, x0, y0, x0 + span, y0 + span));
+      if (cellPiece.length < 3) continue;
+      // the mesh runs its diagonal from the (x0,y0) corner to (x1,y1):
+      // below it is one triangle, above it the other
+      for (const side of [1, -1]) {
+        const half = dedupeRing(clipHalfPlane(cellPiece, x0, y0, side));
+        if (half.length >= 3 && Math.abs(area(half)) > 1e-3) out.push(half);
+      }
+    }
+  }
+  return out.length ? out : [ring];
+}
+
+/** Keep the part of a polygon on one side of the line (y - y0) = (x - x0). */
+export function clipHalfPlane(ring, x0, y0, side) {
+  const f = (p) => side * ((p[1] - y0) - (p[0] - x0));
+  const out = [];
+  for (let i = 0; i < ring.length; i++) {
+    const cur = ring[i], prev = ring[(i + ring.length - 1) % ring.length];
+    const fc = f(cur), fp = f(prev);
+    if (fc <= 0) {
+      if (fp > 0) out.push(lerpTo(prev, cur, fp / (fp - fc)));
+      out.push(cur);
+    } else if (fp <= 0) {
+      out.push(lerpTo(prev, cur, fp / (fp - fc)));
+    }
+  }
+  return out;
+}
+const lerpTo = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];

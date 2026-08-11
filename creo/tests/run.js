@@ -1093,6 +1093,62 @@ group('slopes', () => {
       console.log(`      (worst stored-vs-first-vertex gap: ${worst.toFixed(1)} m on ${worstName} — no longer used)`);
     });
 
+    test('the hill never closes over a road laid on it', () => {
+      // groundAt is bilinear — a curved surface. The terrain mesh is flat
+      // triangles. They meet only at the sample points, and between them the
+      // drawn hill rides above the curve and swallows whatever was laid on it:
+      // a fifth of Boone's road vertices at full detail, more than half of them
+      // zoomed out, by up to 9.7 m. Tiling on the terrain's own lattice and
+      // splitting on its own diagonal puts every piece inside one drawn
+      // triangle, where the ground is a single plane and the drape coincides
+      // with it exactly. This test samples triangle INTERIORS, because vertices
+      // sitting on the surface was never the thing in question.
+      const t = P.terrain;
+      const drawn = (x, y, step) => {
+        const span = t.cell * step;
+        const fx = (x - t.bounds[0]) / span, fy = (y - t.bounds[1]) / span;
+        const ci = Math.floor(fx), cj = Math.floor(fy), i = ci * step, j = cj * step;
+        const u = fx - ci, v = fy - cj;
+        const h00 = t.at(i, j), h10 = t.at(i + step, j);
+        const h11 = t.at(i + step, j + step), h01 = t.at(i, j + step);
+        return v <= u ? h00 + (h10 - h00) * u + (h11 - h10) * v
+          : h00 + (h11 - h01) * u + (h01 - h00) * v;
+      };
+      const FLAT = ['road', 'path', 'surface', 'parcel', 'water', 'stream', 'drain'];
+      for (const step of [1, 2, 3]) {
+        const span = t.cell * step, grid = [t.bounds[0], t.bounds[1]];
+        let buried = 0, n = 0, worst = 0;
+        for (const e of world.entities()) {
+          if (!FLAT.includes(e.type)) continue;
+          const ring = world.ringOf(e);
+          if (!ring || ring.length < 3) continue;
+          const off = 0.03;
+          for (const piece of G.tileRing(ring, span, grid)) {
+            const idx = G.triangulate(piece);
+            for (let k = 0; k < idx.length; k += 3) {
+              const v = [idx[k], idx[k + 1], idx[k + 2]].map((m) => {
+                const q = piece[m];
+                return [q[0], q[1], drawn(q[0], q[1], step) + off];
+              });
+              for (let a = 1; a <= 3; a++) {
+                for (let b = 1; a + b <= 4; b++) {
+                  const u1 = a / 5, u2 = b / 5;
+                  const x = v[0][0] + u1 * (v[1][0] - v[0][0]) + u2 * (v[2][0] - v[0][0]);
+                  const y = v[0][1] + u1 * (v[1][1] - v[0][1]) + u2 * (v[2][1] - v[0][1]);
+                  const z = v[0][2] + u1 * (v[1][2] - v[0][2]) + u2 * (v[2][2] - v[0][2]);
+                  const d = drawn(x, y, step) - z;
+                  n++;
+                  if (d > 1e-6) { buried++; worst = Math.max(worst, d); }
+                }
+              }
+            }
+          }
+        }
+        assert(n > 500, `only ${n} interior samples at step ${step}`);
+        eq(buried, 0, `${buried}/${n} of the surface is inside the hill at step ${step}, worst ${worst.toFixed(2)} m`);
+      }
+    });
+
   test('a flat thing follows the hill instead of spanning it', () => {
       const FLAT = ['path', 'road', 'surface', 'parcel', 'drain', 'water', 'stream'];
       const cell = Math.max(8, Math.min(16, (P.terrain?.cell ?? 24) / 2));

@@ -150,13 +150,29 @@ export class Renderer {
     // Draping needs the ground and a sensible piece size. The terrain's own
     // sample spacing is the right scale: finer invents detail the data does not
     // have, coarser is what put roads inside hillsides in the first place.
-    const ground = (x, y) => world.place.groundAt(x, y);
+    // THE GROUND THAT IS DRAWN, not the ground that is computed.
+    //
+    // groundAt is bilinear — a curved surface. The terrain mesh is flat
+    // triangles. They agree only at the sample points, and everywhere between
+    // them the drawn hill rides above the curve, swallowing anything laid on it.
+    // At full detail that buried a fifth of Boone's road vertices; zoomed out,
+    // where the mesh skips samples entirely, it buried more than half of them by
+    // up to 9.7 m. Simulation still asks the smooth surface — that is the truth
+    // about the ground — but what is laid ON the ground must answer to what is
+    // shown, or a road disappears into a hillside that is not really there.
+    const terrainStep = { high: 1, medium: 2, low: 3 }[fidelity] || 1;
+    const ground = (x, y) => drawnGroundAt(world.place.terrain, x, y, terrainStep);
+
     // Half the DEM's own cell: bilinear ground sampling makes the midpoints
     // real, so this reads the elevation data more finely without inventing
     // detail it does not contain. Measured on Ravello, halving the piece takes
     // the worst deviation from 6.0 m to 3.0 m. Coarser when drawing cheaply.
-    const dem = world.place.terrain?.cell ?? 24;
-    const cell = Math.max(8, Math.min(16, dem / 2)) * (detail >= 2 ? 2 : 1);
+    // Tile on the terrain's OWN lattice, split on its OWN diagonal: each piece
+    // then lies inside a single drawn triangle, where the ground is genuinely
+    // one plane, and the drape coincides with it exactly.
+    const terr = world.place.terrain;
+    const cell = terr ? terr.cell * terrainStep : 12;
+    const grid = terr ? [terr.bounds[0], terr.bounds[1]] : null;
     // A thing that lies on the ground is at the ground, plus a hair to stop it
     // fighting the terrain for the same pixels. Do NOT reconstruct this from the
     // stored zTop: surfaces were authored against their centroid and roads
@@ -183,11 +199,11 @@ export class Renderer {
       } else if (e.type === 'observation') {
         // What someone said about a place should mark it, not bury it. An
         // opaque fill over a drawn area hid the very thing being discussed.
-        T.draped(ring, ground, flatOffset(e) + 0.02, col, 0.18, cell);
+        T.draped(ring, ground, flatOffset(e) + 0.02, col, 0.18, cell, grid);
         L.ring(ring, e.zTop + 0.06, col, 0.95);
         this.buildPin(S, L, e, ring);
       } else if (isFlat(e)) {
-        S.draped(ring, ground, flatOffset(e), col, 1, cell);
+        S.draped(ring, ground, flatOffset(e), col, 1, cell, grid);
       } else {
         // Standing inside a building, the roof is the one thing you do not want
         // to look at. What matters changes with where you are (§17).
@@ -219,7 +235,7 @@ export class Renderer {
       if (!ring || ring.length < 3) continue;
       const bad = g.__invalid;
       const col = bad ? PALETTE.ghostBad : PALETTE.ghost;
-      if (isFlat(g)) T.draped(ring, ground, flatOffset(g) + 0.04, col, 0.42, cell);
+      if (isFlat(g)) T.draped(ring, ground, flatOffset(g) + 0.04, col, 0.42, cell, grid);
       else T.prism(ring, g.zBase, g.zTop, col, col, 0.38);
       L.ring(ring, g.zTop + 0.08, col, 1);
       L.ring(ring, g.zBase + 0.02, col, 0.5);
@@ -236,6 +252,9 @@ export class Renderer {
   }
 
   buildTerrain(B, world, overlay, fidelity) {
+    // NOTE: the split below (00,10,11) + (00,11,01) is the one drawnGroundAt
+    // reproduces. Change one and you must change the other, or things laid on
+    // the ground start sinking into it again.
     const t = world.place.terrain;
     const step = fidelity === 'low' ? 3 : (fidelity === 'medium' ? 2 : 1);
     const water = overlay?.kind === 'water' ? overlay.water : null;
@@ -465,6 +484,26 @@ const MATERIAL_COLOURS = {
   copper: [.35, .55, .48], zinc: [.60, .62, .63], tin: [.58, .56, .54],
 };
 
+/**
+ * The height of the terrain AS DRAWN at (x, y): flat triangles on the same grid
+ * and the same diagonal the mesh uses, so a draped surface and the hill agree
+ * exactly rather than approximately.
+ */
+function drawnGroundAt(t, x, y, step = 1) {
+  if (!t) return 0;
+  const span = t.cell * step;
+  const fx = (x - t.bounds[0]) / span, fy = (y - t.bounds[1]) / span;
+  const ci = Math.floor(fx), cj = Math.floor(fy);
+  const i = ci * step, j = cj * step;
+  const u = fx - ci, v = fy - cj;
+  const h00 = t.at(i, j), h10 = t.at(i + step, j);
+  const h11 = t.at(i + step, j + step), h01 = t.at(i, j + step);
+  // the mesh emits (00,10,11) then (00,11,01): the diagonal runs 00 → 11
+  return v <= u
+    ? h00 + (h10 - h00) * u + (h11 - h10) * v
+    : h00 + (h11 - h01) * u + (h01 - h00) * v;
+}
+
 /** OSM writes colours as names or hex; both are honoured before any guess. */
 function parseColour(v) {
   if (!v) return null;
@@ -602,8 +641,8 @@ class Builder {
    * the height of its first vertex, which on a steep place put it a hundred
    * metres inside the hillside.
    */
-  draped(ring, groundAt, offset, col, alpha = 1, cell = 12) {
-    for (const piece of G.tileRing(ring, cell)) {
+  draped(ring, groundAt, offset, col, alpha = 1, cell = 12, grid = null) {
+    for (const piece of G.tileRing(ring, cell, grid)) {
       const idx = G.triangulate(piece);
       for (let i = 0; i < idx.length; i += 3) {
         const p = [piece[idx[i]], piece[idx[i + 1]], piece[idx[i + 2]]];
