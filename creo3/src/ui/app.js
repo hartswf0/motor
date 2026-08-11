@@ -117,10 +117,17 @@ function frameWorld() {
 function updateFidelity() {
   const n = S.world.entities().length;
   const d = S.cam.dist;
+  // Thresholds relative to the place, not absolute. These were tuned when every
+  // place was 900 m across; on an eleven-kilometre ground you are past 1800 m
+  // almost immediately, and symbolic used to mean the ground itself vanished —
+  // which is now the one thing you navigate by.
+  const t = S.world.place.terrain;
+  const across = t ? t.bounds[2] - t.bounds[0] : 900;
+  const near = Math.max(260, across * 0.06);
   let f = 'high';
-  if (d > 260 || n > 2500) f = 'medium';
-  if (d > 700 || n > 8000) f = 'low';
-  if (d > 1800) f = 'symbolic';
+  if (d > near || n > 2500) f = 'medium';
+  if (d > near * 2.7 || n > 8000) f = 'low';
+  if (d > near * 7) f = 'symbolic';
   if (f !== S.fidelity) { S.fidelity = f; S.dirty = true; }
 }
 
@@ -141,6 +148,7 @@ function rebuild() {
     // how much ground one pixel covers, so a three-metre creek can be drawn
     // wide enough to exist on screen
     metresPerPixel: (2 * S.cam.dist * Math.tan(0.55 / 2)) / Math.max(1, canvas.clientHeight),
+    camera: S.cam,
     // Close in on a building and its roof comes off, so the rooms inside are
     // the thing you are working with.
     cutawayAt: S.cam.dist < 45 ? [S.cam.target[0], S.cam.target[1]] : null,

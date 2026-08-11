@@ -248,13 +248,23 @@ export class Renderer {
   build(world, opts = {}) {
     const { ghosts = [], selection = new Set(), highlight = new Set(), overlay = null,
             preserved = new Set(), changed = new Set(), fidelity = 'high', hour = 14,
-            cutawayAt = null, hidden = new Set(), metresPerPixel = 0.25 } = opts;
+            cutawayAt = null, hidden = new Set(), metresPerPixel = 0.25, camera = null } = opts;
+    // The renderer needs to know where the eye is, for haze and for how much
+    // ground to build. It was reading this.cam, which nobody ever set — so both
+    // silently used their fallbacks. Referenced and absent, twice, by me.
+    if (camera) this.cam = camera;
     this.fidelity = fidelity;
     const S = new Builder();        // opaque
     const T = new Builder();        // translucent
     const L = new LineBuilder();
 
-    if (world.place.terrain && fidelity !== 'symbolic') this.buildTerrain(S, world, overlay, fidelity);
+    // The ground is drawn at EVERY fidelity now, symbolic included. It used to
+    // be dropped there, which was defensible when a place was 900 m of
+    // buildings and is absurd when it is eleven kilometres of landform: the
+    // thing you are looking at IS the ground. The triangle budget already keeps
+    // it cheap, so what changes with fidelity is its resolution, not whether
+    // there is any earth under you.
+    if (world.place.terrain) this.buildTerrain(S, world, overlay, fidelity);
 
     this.contourInterval = 0;
     if (world.place.terrain && fidelity !== 'symbolic' && opts.contours !== false) {
@@ -335,8 +345,10 @@ export class Renderer {
         const lift = flatOffset(e) + 0.35;
         L.ring(ring, 0, PALETTE.boundary, 1, ground, lift);
         L.ring(ring, 0, PALETTE.boundary, 0.55, ground, lift + 0.9);
-        // a hair of tone inside, only enough to say which side is the site
-        T.draped(ring, ground, flatOffset(e), PALETTE.boundary, 0.055, cell, grid);
+        // NO FILL. Even at five percent it was three centimetres above the
+        // terrain and lost the argument with the depth buffer at any distance —
+        // the tint came and went in patches as the camera moved. A boundary
+        // that flickers is worse than no boundary. The line carries it.
       } else if (e.type === 'water' || e.type === 'stream') {
         // A creek is three metres across. From three hundred metres up that is a
         // third of a pixel, which is why the water has been invisible: it was
@@ -424,6 +436,25 @@ export class Renderer {
     const surf = surfaceOf(t, fidelity);
     const water = overlay?.kind === 'water' ? overlay.water : null;
     const { span, ox, oy } = surf;
+    // ONLY THE GROUND YOU CAN SEE, AND ONLY AS FINELY AS YOU CAN SEE IT.
+    //
+    // The ground now runs eleven kilometres, and subdividing all of it to a ten
+    // metre lattice is 2,384,928 triangles — rebuilt on every dirty frame, which
+    // is exactly why a phone crawled. Ground five kilometres behind you does not
+    // need a ten metre lattice; ground under your feet does. So: a window around
+    // where the camera is looking, and a stride chosen to keep the whole mesh
+    // inside a budget. Distant ground is still drawn, just at the resolution it
+    // is actually seen at.
+    const reach = Math.max(600, (this.cam?.dist || 800) * 3.2);
+    const cx = this.cam?.target?.[0] ?? (t.bounds[0] + t.bounds[2]) / 2;
+    const cy = this.cam?.target?.[1] ?? (t.bounds[1] + t.bounds[3]) / 2;
+    const i0 = Math.max(0, Math.floor((cx - reach - ox) / span));
+    const i1 = Math.min(surf.nx, Math.ceil((cx + reach - ox) / span));
+    const j0 = Math.max(0, Math.floor((cy - reach - oy) / span));
+    const j1 = Math.min(surf.ny, Math.ceil((cy + reach - oy) / span));
+    const BUDGET = fidelity === 'high' ? 260000 : fidelity === 'medium' ? 140000
+      : fidelity === 'low' ? 70000 : 40000;
+    const stride = Math.max(1, Math.ceil(Math.sqrt(((i1 - i0) * (j1 - j0) * 2) / BUDGET)));
     // NOTE: the split below (00,10,11) + (00,11,01) is the one surfaceHeight
     // reproduces. Change one and you must change the other, or things laid on
     // the ground start sinking into it again.
@@ -434,15 +465,15 @@ export class Renderer {
       const len = Math.hypot(dzdx, dzdy, 1);
       return [-dzdx / len, -dzdy / len, 1 / len];
     };
-    for (let j = 0; j < surf.ny; j++) {
-      for (let i = 0; i < surf.nx; i++) {
+    for (let j = j0; j + stride <= j1; j += stride) {
+      for (let i = i0; i + stride <= i1; i += stride) {
         const x0 = ox + i * span, y0 = oy + j * span;
-        const x1 = x0 + span, y1 = y0 + span;
-        const h00 = surf.at(i, j), h10 = surf.at(i + 1, j);
-        const h11 = surf.at(i + 1, j + 1), h01 = surf.at(i, j + 1);
+        const x1 = x0 + span * stride, y1 = y0 + span * stride;
+        const h00 = surf.at(i, j), h10 = surf.at(i + stride, j);
+        const h11 = surf.at(i + stride, j + stride), h01 = surf.at(i, j + stride);
         const c = terrainColor((h00 + h11) / 2, t, water, (x0 + x1) / 2, (y0 + y1) / 2);
-        const n00 = nrm(i, j), n10 = nrm(i + 1, j);
-        const n11 = nrm(i + 1, j + 1), n01 = nrm(i, j + 1);
+        const n00 = nrm(i, j), n10 = nrm(i + stride, j);
+        const n11 = nrm(i + stride, j + stride), n01 = nrm(i, j + stride);
         B.tri([x0, y0, h00], [x1, y0, h10], [x1, y1, h11], n00, c, 1, n10, n11);
         B.tri([x0, y0, h00], [x1, y1, h11], [x0, y1, h01], n00, c, 1, n11, n01);
       }
@@ -735,7 +766,7 @@ export function surfaceOf(t, fidelity = 'high') {
   // building scale, subdividing again would put a million triangles on screen
   // to describe interpolation of interpolation. The lattice is kept at roughly
   // eight metres, whatever the source cell happens to be.
-  const want = { high: 8, medium: 12, low: 24, symbolic: 24 }[fidelity] ?? 12;
+  const want = { high: 8, medium: 12, low: 24, symbolic: 40 }[fidelity] ?? 12;
   const sub = Math.max(1, Math.min(3, Math.round(t.cell / want)));
   const span = t.cell / sub;
   return {

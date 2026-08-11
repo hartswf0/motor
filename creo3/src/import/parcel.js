@@ -131,3 +131,65 @@ const centroidOf = (ring) => [
   ring.reduce((s, p) => s + p[0], 0) / ring.length,
   ring.reduce((s, p) => s + p[1], 0) / ring.length,
 ];
+
+
+const TN_ROADS = 'https://tnmap.tn.gov/arcgis/rest/services/TRANSPORTATION/MAJOR_ROADS/MapServer/0/query';
+
+/**
+ * The road, from the same authority as the boundary.
+ *
+ * OpenStreetMap has this road too, and its line is often better. But a parcel
+ * is only meaningful against the frontage the assessor and the state recognise
+ * — the deed says HWY 321, and this is the state's own centreline for HWY 321.
+ * Where the two disagree, that disagreement is worth seeing rather than
+ * averaging away, so this arrives as its own thing and says where it came from.
+ */
+export async function findRoads(bbox, { fetchImpl = fetch } = {}) {
+  const params = new URLSearchParams({
+    geometry: `${bbox[1]},${bbox[0]},${bbox[3]},${bbox[2]}`,
+    geometryType: 'esriGeometryEnvelope', inSR: '4326', outSR: '4326',
+    spatialRel: 'esriSpatialRelIntersects',
+    outFields: 'ST_NAME,NAME,PRETYPE', returnGeometry: 'true', f: 'json',
+  });
+  const res = await fetchImpl(`${TN_ROADS}?${params}`);
+  if (!res.ok) throw new Error(`the road service answered ${res.status}`);
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.message || 'the road service refused that query');
+  return (data.features || []).map((f) => ({
+    name: f.attributes.ST_NAME || f.attributes.NAME || 'road',
+    paths: (f.geometry.paths || []).map((path) => path.map(([lon, lat]) => [lat, lon])),
+  }));
+}
+
+/** Put those centrelines into a place, marked as the state's account. */
+export function addRoads(world, roads, projection, { width = 11 } = {}) {
+  const added = [];
+  for (const r of roads) {
+    for (const [n, path] of r.paths.entries()) {
+      if (path.length < 2) continue;
+      const line = path.map(([lat, lon]) => projection.toLocal(lat, lon).map((v) => +v.toFixed(2)));
+      const id = `tnroad-${r.name.replace(/\W+/g, '-').toLowerCase()}-${n}`;
+      const z = world.place.groundAt(line[0][0], line[0][1]);
+      world.place.put({
+        id,
+        type: 'road',
+        name: r.name,
+        path: line,
+        width,
+        zBase: z, zTop: z + 0.05,
+        epistemic: 'IMPORTED',
+        collision: 'none',
+        network: 'road',
+        sim: { permeability: 0.15, roughness: 0.02 },
+        provenance: {
+          author: 'Tennessee Department of Transportation',
+          how: 'major road centreline, published by the state',
+          when: new Date().toISOString(),
+        },
+        props: { source: 'TN major roads', note: 'a centreline, not a carriageway edge' },
+      });
+      added.push(id);
+    }
+  }
+  return added;
+}

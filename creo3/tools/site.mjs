@@ -1,7 +1,7 @@
 // Build a place around a real parcel: the boundary, the ground it sits on, and
 // the road that reaches it.  node tools/site.mjs JOHNSON 100 064.03
 import { writeFileSync, readFileSync, existsSync } from 'node:fs';
-import { findParcel, addParcel } from '../src/import/parcel.js';
+import { findParcel, addParcel, findRoads, addRoads } from '../src/import/parcel.js';
 import { importPlace, slug } from '../src/import/place.js';
 import { makeProjection } from '../src/core/geom.js';
 import * as G from '../src/core/geom.js';
@@ -35,6 +35,14 @@ const { world, key, stats } = await importPlace({
 const projection = makeProjection(lat, lon);
 const id = addParcel(world, found, projection);
 const ring = world.ringOf(world.get(id));
+
+// the frontage, from the same authority as the boundary
+try {
+  const roads = await findRoads([lat - dLat, lon - dLon, lat + dLat, lon + dLon]);
+  const ids = addRoads(world, roads, projection);
+  console.log(`\n  frontage: ${[...new Set(roads.map((r) => r.name))].join(', ') || 'none'} `
+    + `(${ids.length} centreline${ids.length === 1 ? '' : 's'}, from the state)`);
+} catch (e) { console.log(`\n  no state roads (${e.message.slice(0, 50)})`); }
 console.log(`\nTHE SITE`);
 console.log(`  parcel drawn over ${Math.round(Math.abs(G.area(ring)))} m² of the model`);
 
