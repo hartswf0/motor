@@ -313,36 +313,44 @@ export class Renderer {
     const interval = [1, 2, 5, 10].map((m) => m * pow).find((v) => v >= raw) || 10 * pow;
     const step = fidelity === 'low' ? 2 : 1;
 
-    // marching squares on the heightfield: linear interpolation along each cell
-    // edge that the level crosses, which puts the line exactly where the data
-    // says the height is, not where a shader guesses.
-    const zAt = (i, j) => t.at(i, j);
+    // Marching squares, but on the TRIANGLES THE MESH DRAWS rather than on the
+    // cell as a quad. A quad's four corners describe a curved surface; the mesh
+    // draws two flat triangles. Contour a curve and draw a facet and the line
+    // crosses in and out of the ground — a fifth of the contour length on
+    // Watauga Lake was inside the hill, by up to 4.6 m, which is why the lines
+    // came out dashed on the steep faces.
+    //
+    // Inside a single flat triangle the level set is a straight segment lying
+    // exactly on the surface, so this is not an improvement in accuracy but a
+    // removal of the disagreement: the contour is on the ground by construction.
     const first = Math.ceil(lo / interval) * interval;
+    const seg = (tri, level, col, alpha) => {
+      const hit = [];
+      for (let k = 0; k < 3; k++) {
+        const a = tri[k], b = tri[(k + 1) % 3];
+        if ((a[2] < level) === (b[2] < level)) continue;
+        const f = (level - a[2]) / (b[2] - a[2]);
+        hit.push([a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f]);
+      }
+      if (hit.length !== 2) return;
+      L.segment([hit[0][0], hit[0][1], level + 0.12], [hit[1][0], hit[1][1], level + 0.12], col, alpha);
+    };
+
     for (let level = first; level <= hi; level += interval) {
-      const index = Math.abs(level / interval) % 5 < 0.001;
-      const col = index ? PALETTE.contourIndex : PALETTE.contour;
-      const alpha = index ? 0.85 : 0.42;
+      const isIndex = Math.abs((level / interval) % 5) < 0.001;
+      const col = isIndex ? PALETTE.contourIndex : PALETTE.contour;
+      const alpha = isIndex ? 0.85 : 0.42;
       for (let j = 0; j + step < t.ny; j += step) {
         for (let i = 0; i + step < t.nx; i += step) {
           const x0 = t.bounds[0] + i * t.cell, y0 = t.bounds[1] + j * t.cell;
           const x1 = t.bounds[0] + (i + step) * t.cell, y1 = t.bounds[1] + (j + step) * t.cell;
-          const h = [zAt(i, j), zAt(i + step, j), zAt(i + step, j + step), zAt(i, j + step)];
-          const pts = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
-          const cross = [];
-          for (let k = 0; k < 4; k++) {
-            const a = h[k], b = h[(k + 1) % 4];
-            if ((a < level) === (b < level)) continue;
-            const f = (level - a) / (b - a);
-            const pa = pts[k], pb = pts[(k + 1) % 4];
-            cross.push([pa[0] + (pb[0] - pa[0]) * f, pa[1] + (pb[1] - pa[1]) * f]);
-          }
-          // 2 crossings is a segment; 4 is a saddle, drawn as two
-          if (cross.length === 2) {
-            L.segment([cross[0][0], cross[0][1], level + 0.12], [cross[1][0], cross[1][1], level + 0.12], col, alpha);
-          } else if (cross.length === 4) {
-            L.segment([cross[0][0], cross[0][1], level + 0.12], [cross[1][0], cross[1][1], level + 0.12], col, alpha);
-            L.segment([cross[2][0], cross[2][1], level + 0.12], [cross[3][0], cross[3][1], level + 0.12], col, alpha);
-          }
+          const p00 = [x0, y0, t.at(i, j)];
+          const p10 = [x1, y0, t.at(i + step, j)];
+          const p11 = [x1, y1, t.at(i + step, j + step)];
+          const p01 = [x0, y1, t.at(i, j + step)];
+          // the same two triangles buildTerrain emits, in the same order
+          seg([p00, p10, p11], level, col, alpha);
+          seg([p00, p11, p01], level, col, alpha);
         }
       }
     }

@@ -124,5 +124,29 @@
     },
     "relief": 89,
     "source": "OpenStreetMap (ODbL)"
+  },
+  {
+    "key": "watauga-lake-carter-county-united-states",
+    "name": "Watauga Lake, Carter County, United States",
+    "bbox": [
+      36.32529199971254,
+      -82.03484466904172,
+      36.33337680028746,
+      -82.02480923095828
+    ],
+    "fetchedAt": "2026-08-11T02:18:00.574Z",
+    "scale": "neighbourhood",
+    "counts": {
+      "buildings": 0,
+      "roads": 7,
+      "paths": 0,
+      "water": 12,
+      "surfaces": 0,
+      "trees": 0,
+      "walls": 0,
+      "skipped": 1
+    },
+    "relief": 155,
+    "source": "OpenStreetMap (ODbL)"
   }
 ]

@@ -18,7 +18,7 @@ import { ask } from '../src/world/query.js';
 import { certify } from '../src/world/certificate.js';
 import { lexiconCollisions } from '../src/lang/lexicon.js';
 import { repairFor } from '../src/ai/operator.js';
-import { FLAT_ORDER } from '../src/render/gl.js';
+import { FLAT_ORDER, Renderer } from '../src/render/gl.js';
 import { toGeoJSON, fromGeoJSON } from '../src/world/export.js';
 import { consequenceOf } from '../src/sim/consequence.js';
 import { runWater } from '../src/sim/water.js';
@@ -1150,7 +1150,87 @@ group('slopes', () => {
       }
     });
 
-    test('water is drawn over the land it runs through, and under the ways', () => {
+    test('the renderer can actually draw the contours', () => {
+      // The test below reimplements the algorithm, so it kept passing while a
+      // ReferenceError inside buildContours blanked the entire scene. A test
+      // that never calls the code cannot report that the code is broken. This
+      // one runs the real method against a stub line builder — no GL needed,
+      // since drawing a contour is arithmetic and a list of segments.
+      const segments = [];
+      const L = { segment: (a, b, col, alpha) => segments.push({ a, b, col, alpha }) };
+      const self = {};
+      Renderer.prototype.buildContours.call(self, L, world, 'high');
+      assert(segments.length > 200, `only ${segments.length} contour segments drawn`);
+      assert(self.contourInterval > 0, 'no contour interval was chosen');
+      for (const s of segments.slice(0, 50)) {
+        assert(Number.isFinite(s.a[2]) && Number.isFinite(s.b[2]),
+          `a contour segment has no height: ${JSON.stringify(s.a)}`);
+      }
+      // index contours are drawn heavier, which is how a map is read
+      const heavy = segments.filter((x) => x.alpha > 0.6).length;
+      assert(heavy > 0 && heavy < segments.length, `index contours are ${heavy}/${segments.length}`);
+    });
+
+  test('a contour lies on the ground it describes', () => {
+      // Marching squares on the cell as a QUAD describes a curved surface; the
+      // mesh draws two flat triangles. Contour the curve, draw the facet, and
+      // the line crosses in and out of the hill — a fifth of the contour length
+      // on Watauga Lake, by up to 4.6 m, which is why the lines came out dashed
+      // across the steep faces. Inside one flat triangle the level set is a
+      // straight segment lying exactly on the surface.
+      const t = P.terrain;
+      const drawn = (x, y) => {
+        const fx = (x - t.bounds[0]) / t.cell, fy = (y - t.bounds[1]) / t.cell;
+        const i = Math.floor(fx), j = Math.floor(fy);
+        const u = fx - i, v = fy - j;
+        const h00 = t.at(i, j), h10 = t.at(i + 1, j);
+        const h11 = t.at(i + 1, j + 1), h01 = t.at(i, j + 1);
+        return v <= u ? h00 + (h10 - h00) * u + (h11 - h10) * v
+          : h00 + (h11 - h01) * u + (h01 - h00) * v;
+      };
+      let lo = Infinity, hi = -Infinity;
+      for (const v of t.data) { if (v < lo) lo = v; if (v > hi) hi = v; }
+      const raw = (hi - lo) / 25;
+      const pow = Math.pow(10, Math.floor(Math.log10(raw)));
+      const interval = [1, 2, 5, 10].map((m) => m * pow).find((v) => v >= raw) || 10 * pow;
+
+      let segments = 0, buried = 0, samples = 0, worst = 0;
+      const seg = (tri, level) => {
+        const hit = [];
+        for (let k = 0; k < 3; k++) {
+          const a = tri[k], b = tri[(k + 1) % 3];
+          if ((a[2] < level) === (b[2] < level)) continue;
+          const f = (level - a[2]) / (b[2] - a[2]);
+          hit.push([a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f]);
+        }
+        if (hit.length !== 2) return;
+        segments++;
+        for (let k = 1; k < 8; k++) {
+          const f = k / 8;
+          const x = hit[0][0] + (hit[1][0] - hit[0][0]) * f;
+          const y = hit[0][1] + (hit[1][1] - hit[0][1]) * f;
+          const d = drawn(x, y) - (level + 0.12);
+          samples++;
+          if (d > 1e-6) { buried++; worst = Math.max(worst, d); }
+        }
+      };
+      for (let level = Math.ceil(lo / interval) * interval; level <= hi; level += interval) {
+        for (let j = 0; j + 1 < t.ny; j++) {
+          for (let i = 0; i + 1 < t.nx; i++) {
+            const x0 = t.bounds[0] + i * t.cell, y0 = t.bounds[1] + j * t.cell;
+            const x1 = t.bounds[0] + (i + 1) * t.cell, y1 = t.bounds[1] + (j + 1) * t.cell;
+            const p00 = [x0, y0, t.at(i, j)], p10 = [x1, y0, t.at(i + 1, j)];
+            const p11 = [x1, y1, t.at(i + 1, j + 1)], p01 = [x0, y1, t.at(i, j + 1)];
+            seg([p00, p10, p11], level);
+            seg([p00, p11, p01], level);
+          }
+        }
+      }
+      assert(segments > 200, `only ${segments} contour segments on 281 m of relief`);
+      eq(buried, 0, `${buried}/${samples} of the contour is inside the hill, worst ${worst.toFixed(2)} m`);
+    });
+
+  test('water is drawn over the land it runs through, and under the ways', () => {
       // Half of Boone's water was invisible for one reason: a stream sat 2 cm
       // above the ground and the wood it ran through sat 3 cm, so the wood won.
       // Not too small, not too dark — covered.
