@@ -171,6 +171,7 @@ export class Renderer {
     // between segments falls from 17.5° to 7°. It costs 15,000 terrain
     // triangles instead of 1,700, which on any machine is nothing.
     const surf = surfaceOf(world.place.terrain, fidelity);
+    this.surface = surf;              // the overlay draws on the same ground
     const ground = (x, y) => surfaceHeight(surf, x, y);
 
     // Half the DEM's own cell: bilinear ground sampling makes the midpoints
@@ -470,17 +471,42 @@ export class Renderer {
       }
     }
     if (overlay.stroke) {
+      // WHAT YOU DREW HAS TO LIE ON WHAT YOU DREW IT ON.
+      //
+      // The fill was one flat polygon at the height of the stroke's CENTROID,
+      // so on any slope half of it was buried in the hill and half hung over
+      // it — which is why a circle drawn across a hillside looked tilted and
+      // mostly invisible. And both fill and outline asked the smooth heightfield
+      // for their height while the hill is drawn as facets, so what did clear
+      // the ground sank into it anyway.
+      //
+      // It is draped now, on the same lattice as everything else, and it sits
+      // above the roads and the water because a thing being pointed at is not
+      // underneath the things it is about.
       const s = overlay.stroke;
-      if (overlay.strokeClosed && s.length > 2) {
-        T.polygon(s, world.place.groundAt(...G.centroid(s)) + 0.1, PALETTE.select, 0.14);
+      const h = overlay.strokeHeights || null;
+      const surf = this.surface;
+      const zAt = (p, i) => (h && h[i] != null ? h[i] : (surf ? surfaceHeight(surf, p[0], p[1]) : world.place.groundAt(p[0], p[1])));
+      if (overlay.strokeClosed && s.length > 2 && surf) {
+        T.draped(s, (x, y) => surfaceHeight(surf, x, y), 0.18, PALETTE.select, 0.16,
+          surf.span, [surf.ox, surf.oy]);
+      } else if (overlay.strokeClosed && s.length > 2) {
+        T.polygon(s, world.place.groundAt(...G.centroid(s)) + 0.18, PALETTE.select, 0.16);
       }
-      for (let i = 0; i < s.length - 1; i++) {
-        L.segment([s[i][0], s[i][1], world.place.groundAt(...s[i]) + 0.12],
-                  [s[i + 1][0], s[i + 1][1], world.place.groundAt(...s[i + 1]) + 0.12], PALETTE.select, 1);
-      }
-      if (overlay.strokeClosed && s.length > 2) {
-        L.segment([s[s.length - 1][0], s[s.length - 1][1], world.place.groundAt(...s[s.length - 1]) + 0.12],
-                  [s[0][0], s[0][1], world.place.groundAt(...s[0]) + 0.12], PALETTE.select, 1);
+      const last = overlay.strokeClosed && s.length > 2 ? s.length : s.length - 1;
+      for (let i = 0; i < last; i++) {
+        const a = s[i], b = s[(i + 1) % s.length];
+        // a captured point can be metres from its neighbour across a fold, so
+        // the line between them is walked rather than jumped
+        const steps = Math.max(1, Math.min(24, Math.round(G.dist(a, b) / 3)));
+        for (let k = 0; k < steps; k++) {
+          const t0 = k / steps, t1 = (k + 1) / steps;
+          const p0 = [a[0] + (b[0] - a[0]) * t0, a[1] + (b[1] - a[1]) * t0];
+          const p1 = [a[0] + (b[0] - a[0]) * t1, a[1] + (b[1] - a[1]) * t1];
+          const z0 = steps === 1 ? zAt(a, i) : (surf ? surfaceHeight(surf, p0[0], p0[1]) : world.place.groundAt(p0[0], p0[1]));
+          const z1 = steps === 1 ? zAt(b, (i + 1) % s.length) : (surf ? surfaceHeight(surf, p1[0], p1[1]) : world.place.groundAt(p1[0], p1[1]));
+          L.segment([p0[0], p0[1], z0 + 0.22], [p1[0], p1[1], z1 + 0.22], PALETTE.select, 1);
+        }
       }
     }
   }

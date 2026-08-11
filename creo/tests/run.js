@@ -1235,6 +1235,60 @@ group('slopes', () => {
       eq(buried, 0, `${buried}/${samples} of the contour is inside the hill, worst ${worst.toFixed(2)} m`);
     });
 
+  test('what you draw lies on what you drew it on', () => {
+      // The filled region was ONE flat polygon at the height of the stroke's
+      // centroid. Across 27 m of fall that put it 14 m from the ground — half
+      // buried, half hanging — which is why a circle drawn on a hillside looked
+      // tilted and mostly invisible. A drawn region obeys the same rule as a
+      // road: it lies on the ground that is drawn, not near it.
+      const span = P.terrain.cell;
+      const ox = P.terrain.bounds[0], oy = P.terrain.bounds[1];
+      const drawn = (x, y) => {
+        const fx = (x - ox) / span, fy = (y - oy) / span;
+        const i = Math.floor(fx), j = Math.floor(fy);
+        const u = fx - i, v = fy - j;
+        const h00 = P.terrain.at(i, j), h10 = P.terrain.at(i + 1, j);
+        const h11 = P.terrain.at(i + 1, j + 1), h01 = P.terrain.at(i, j + 1);
+        return v <= u ? h00 + (h10 - h00) * u + (h11 - h10) * v
+          : h00 + (h11 - h01) * u + (h01 - h00) * v;
+      };
+      let at = null, fall = 0;
+      for (let j = 6; j < P.terrain.ny - 6; j += 3) {
+        for (let i = 6; i < P.terrain.nx - 6; i += 3) {
+          const x = ox + i * span, y = oy + j * span;
+          const sp = G.groundSpan(G.circleRing(x, y, 25, 12), ground, 5);
+          if (sp && sp.hi - sp.lo > fall) { fall = sp.hi - sp.lo; at = [x, y]; }
+        }
+      }
+      assert(fall > 10, `no steep ground to draw across (${fall.toFixed(1)} m)`);
+      const ring = G.circleRing(at[0], at[1], 25, 36);
+
+      const flat = drawn(...G.centroid(ring));
+      let flatWorst = 0;
+      for (const p of ring) flatWorst = Math.max(flatWorst, Math.abs(flat - drawn(p[0], p[1])));
+      assert(flatWorst > 3, `this test needs a slope; a flat plane was only ${flatWorst.toFixed(1)} m out`);
+
+      let drapedWorst = 0;
+      for (const piece of G.tileRing(ring, span, [ox, oy])) {
+        const idx = G.triangulate(piece);
+        for (let k = 0; k < idx.length; k += 3) {
+          const v = [idx[k], idx[k + 1], idx[k + 2]].map((m) => {
+            const q = piece[m];
+            return [q[0], q[1], drawn(q[0], q[1])];
+          });
+          for (const [u1, u2] of [[0.25, 0.25], [0.5, 0.25], [0.25, 0.5]]) {
+            const x = v[0][0] + u1 * (v[1][0] - v[0][0]) + u2 * (v[2][0] - v[0][0]);
+            const y = v[0][1] + u1 * (v[1][1] - v[0][1]) + u2 * (v[2][1] - v[0][1]);
+            const z = v[0][2] + u1 * (v[1][2] - v[0][2]) + u2 * (v[2][2] - v[0][2]);
+            drapedWorst = Math.max(drapedWorst, Math.abs(z - drawn(x, y)));
+          }
+        }
+      }
+      assert(drapedWorst < 0.001,
+        `a drawn region is ${drapedWorst.toFixed(2)} m off the ground it was drawn on`);
+      console.log(`      (across ${fall.toFixed(0)} m of fall — one flat plane: ${flatWorst.toFixed(1)} m off · draped: ${drapedWorst.toFixed(3)} m)`);
+    });
+
   test('water is drawn over the land it runs through, and under the ways', () => {
       // Half of Boone's water was invisible for one reason: a stream sat 2 cm
       // above the ground and the wood it ran through sat 3 cm, so the wood won.

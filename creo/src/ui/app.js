@@ -148,6 +148,7 @@ function rebuild() {
       ...(S.overlay || {}),
       kind: S.overlay?.kind,
       stroke: S.stroke,
+      strokeHeights: S.strokeHeights,
       strokeClosed: S.strokeClosed,
       corridors: S.plan?.corridors || [],
       trace: S.overlay?.trace || [],
@@ -341,8 +342,8 @@ canvas.addEventListener('pointerdown', (ev) => {
   pointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY, x0: ev.clientX, y0: ev.clientY, t: Date.now() });
   if (pointers.size === 1) {
     if (S.mode === 'draw') {
-      const p = rayToGround(S.world, rayAt(ev.clientX, ev.clientY));
-      if (p) { S.stroke = [p]; S.strokeClosed = false; gesture = 'draw'; S.dirty = true; }
+      const d = drawPoint(ev.clientX, ev.clientY);
+      if (d) { S.stroke = [d.p]; S.strokeHeights = [d.z]; S.strokeClosed = false; gesture = 'draw'; S.dirty = true; }
       return;
     }
     const hit = pick(S.world, rayAt(ev.clientX, ev.clientY), { fidelity: S.fidelity });
@@ -378,8 +379,12 @@ canvas.addEventListener('pointermove', (ev) => {
   pt.x = ev.clientX; pt.y = ev.clientY;
 
   if (gesture === 'draw' && S.stroke) {
-    const p = rayToGround(S.world, rayAt(ev.clientX, ev.clientY));
-    if (p && G.dist(p, S.stroke[S.stroke.length - 1]) > 0.8) { S.stroke.push(p); S.dirty = true; }
+    const d = drawPoint(ev.clientX, ev.clientY);
+    if (d && G.dist(d.p, S.stroke[S.stroke.length - 1]) > 0.8) {
+      S.stroke.push(d.p);
+      (S.strokeHeights ||= []).push(d.z);
+      S.dirty = true;
+    }
     return;
   }
   if (gesture === 'move' && S.dragging) {
@@ -499,6 +504,23 @@ function panBy(dx, dy) {
   S.cam.target[0] += (Math.sin(yaw) * dx + Math.cos(yaw) * dy) * scale;
   S.cam.target[1] += (-Math.cos(yaw) * dx + Math.sin(yaw) * dy) * scale;
   clampCamera();
+}
+
+/**
+ * A point under the cursor, ON WHATEVER IT IS OVER.
+ *
+ * Drawing asked the terrain where the cursor was, so a line drawn across a roof
+ * landed on the ground BEHIND the building — metres from where it was drawn,
+ * and skewed, because that error grows with how oblique the view is. What is
+ * under the cursor is whatever the eye is on: a roof, a road, the hill.
+ */
+function drawPoint(x, y) {
+  const hit = pick(S.world, rayAt(x, y), { fidelity: S.fidelity });
+  if (hit?.point) {
+    return { p: [hit.point[0], hit.point[1]], z: hit.entity ? hit.entity.zTop : null };
+  }
+  const p = rayToGround(S.world, rayAt(x, y));
+  return p ? { p, z: null } : null;
 }
 
 function tap(x, y, additive) {
@@ -2022,7 +2044,7 @@ addEventListener('keydown', (ev) => {
   else if (k === 'n') openNote();
   else if (k === 'r') toggleRain();
   else if (k === '/') { ev.preventDefault(); $('sayInput').focus(); }
-  else if (k === 'escape') { S.selection.clear(); S.stroke = null; hide('tools'); hide('proposal'); S.plan = null; S.dirty = true; }
+  else if (k === 'escape') { S.selection.clear(); S.stroke = null; S.strokeHeights = null; hide('tools'); hide('proposal'); S.plan = null; S.dirty = true; }
   // Arrows move you, which is what arrows do. Hold shift to turn and zoom.
   else if (k.startsWith('arrow')) {
     ev.preventDefault();
