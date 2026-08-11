@@ -106,8 +106,13 @@ function targetHeight(p, pad, floor, batter, natural) {
 function sampleGround(world, ring, step, keepPoints = false) {
   const b = G.bbox(ring);
   const out = [];
+  // A step that is zero, negative or NaN turns this into an infinite loop, and
+  // a cell size arrives here from data. Never trust a stride you did not choose.
+  if (!(step > 0) || !isFinite(b[0]) || !isFinite(b[2])) return out;
+  const MAX = 40000;
   for (let y = b[1]; y <= b[3]; y += step) {
     for (let x = b[0]; x <= b[2]; x += step) {
+      if (out.length >= MAX) return out;
       if (!G.pointInRing([x, y], ring)) continue;
       const z = world.place.groundAt(x, y);
       out.push(keepPoints ? { p: [x, y], z } : z);
