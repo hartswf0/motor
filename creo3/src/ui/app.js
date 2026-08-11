@@ -26,7 +26,7 @@ import { plan, commitPlan } from '../world/ops.js';
 import { ask } from '../world/query.js';
 import { consequenceOf } from '../sim/consequence.js';
 import { summarize } from '../world/certificate.js';
-import { Renderer, perspective, lookAt, multiply, screenRay } from '../render/gl.js';
+import { Renderer, perspective, lookAt, multiply, screenRay, setTheme } from '../render/gl.js';
 import { pick, rayToGround } from '../render/pick.js';
 
 const $ = (id) => document.getElementById(id);
@@ -2142,6 +2142,7 @@ addEventListener('keydown', (ev) => {
   else if (k === 'f') frameAll();
   else if (k === 'g') openFindPanel();
   else if (k === 'x') $('exploreBtn').click();
+  else if (k === 't') $('themeChip').click();
   else if (k === '-' || k === '_') $('planOut').click();
   else if (k === '=' || k === '+') $('planIn').click();
   // In explore mode the arrows choose the window rather than move the camera —
@@ -2411,8 +2412,9 @@ function updateOrientation() {
   // the camera looks along yaw from behind; north is +y in the place's metres
   const facing = ((90 - (S.cam.yaw * 180) / Math.PI) % 360 + 360) % 360;
   const rose = $('compassRose');
-  if (rose) rose.setAttribute('transform', `rotate(${-facing})`);
-  $('bearing').textContent = `${Math.round(facing)}° ${CARDINALS[Math.round(facing / 22.5) % 16]}`;
+  if (rose) rose.style.transform = `rotate(${-facing}deg)`;
+  const whereBtn = $('whereAmI');
+  if (whereBtn) whereBtn.title = `Facing ${Math.round(facing)}° ${CARDINALS[Math.round(facing / 22.5) % 16]} — tap to copy this position`;
 
   const p = S.pointer || [S.cam.target[0], S.cam.target[1]];
   const ll = toLatLon(p[0], p[1]);
@@ -2434,8 +2436,28 @@ $('whereAmI').onclick = async () => {
   catch { toast(text); }
 };
 
-$('planOut').onclick = () => { minimap.zoom(1.6); S.dirty = true; sayPlanReach(); };
-$('planIn').onclick = () => { minimap.zoom(1 / 1.6); S.dirty = true; sayPlanReach(); };
+// invalidate({plan}) — NOT S.dirty. The plan redraws only when planDirty is
+// set, so zooming it set a flag nobody was reading and the buttons did nothing.
+/** Daylight or night, for the page and the world at once. */
+function applyTheme(name) {
+  const t = setTheme(name);
+  document.body.classList.toggle('day', t === 'light');
+  localStorage.setItem('creo.theme', t);
+  $('themeChip').textContent = t === 'light' ? '◑' : '◐';
+  // colours are baked into the vertex buffers at build time, and S.dirty makes
+  // the frame loop rebuild them — no separate call, and no call to a method
+  // that does not exist
+  invalidate({ plan: true });
+  S.dirty = true;
+  return t;
+}
+$('themeChip').onclick = () => {
+  const now = applyTheme(document.body.classList.contains('day') ? 'dark' : 'light');
+  toast(now === 'light' ? 'Daylight.' : 'Night.');
+};
+
+$('planOut').onclick = () => { minimap.zoom(1.6); invalidate({ plan: true }); sayPlanReach(); };
+$('planIn').onclick = () => { minimap.zoom(1 / 1.6); invalidate({ plan: true }); sayPlanReach(); };
 
 /** Say how much ground the plan is showing, and how much of it is real. */
 function sayPlanReach() {
@@ -2487,6 +2509,7 @@ setAuthor(localStorage.getItem('creo.author') || '');
 loadPlace(localStorage.getItem('creo.place') || 'settlement')
   .catch((err) => reportFailure('Could not open that place', err));
 wireDropTarget();
+applyTheme(localStorage.getItem('creo.theme') || 'dark');
 if (shouldShowHelp()) setTimeout(() => openHelp(), 600);
 else if (!S.author) setTimeout(() => toast('Tap “add your name” at the top so the place can remember who changed what.'), 900);
 

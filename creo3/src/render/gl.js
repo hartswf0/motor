@@ -16,6 +16,7 @@ uniform mat4 uViewProj;
 uniform vec3 uSun;
 out vec4 vColor;
 out float vFog;
+uniform float uFogFar;
 out vec3 vWorld;
 void main() {
   vec4 clip = uViewProj * vec4(aPos, 1.0);
@@ -23,7 +24,7 @@ void main() {
   float lambert = max(dot(normalize(aNormal), normalize(uSun)), 0.0);
   float ambient = 0.66 + 0.14 * aNormal.z;
   vColor = vec4(aColor.rgb * (ambient + 0.46 * lambert), aColor.a);
-  vFog = clamp(clip.w / 900.0, 0.0, 1.0);
+  vFog = clamp(clip.w / uFogFar, 0.0, 1.0);
   vWorld = aPos;
 }`;
 
@@ -35,7 +36,7 @@ in vec3 vWorld;
 uniform vec4 uFog;
 out vec4 outColor;
 void main() {
-  vec3 c = mix(vColor.rgb, uFog.rgb, vFog * 0.85);
+  vec3 c = mix(vColor.rgb, uFog.rgb, vFog * uFog.a);
   outColor = vec4(c, vColor.a);
 }`;
 
@@ -54,7 +55,7 @@ out vec4 outColor;
 void main() { outColor = vColor; }`;
 
 // Palette: the world is the subject, the interface is not.
-export const PALETTE = {
+const DARK = {
   ground: [0.36, 0.35, 0.30],
   groundHigh: [0.47, 0.45, 0.38],
   structure: [0.62, 0.58, 0.52],
@@ -89,6 +90,47 @@ export const PALETTE = {
   preserve: [0.55, 0.95, 0.60],
   sky: [0.055, 0.063, 0.078],
 };
+
+/**
+ * DAYLIGHT. Not an inverted dark theme — a different light.
+ *
+ * The dark palette is right for a lit room and wrong for almost everything else:
+ * outdoors, in a meeting, on a phone, or when the thing under discussion is the
+ * shape of land, which is what people have read off white paper for two hundred
+ * years. Ground goes pale so contours and water read as ink on it, and the sky
+ * goes near-white so that distance softens rather than swallows.
+ */
+const LIGHT = {
+  ...DARK,
+  sky: [0.90, 0.91, 0.92],
+  ground: [0.83, 0.81, 0.75],
+  groundHigh: [0.93, 0.91, 0.86],
+  structure: [0.72, 0.68, 0.63],
+  road: [0.62, 0.61, 0.59],
+  path: [0.72, 0.69, 0.64],
+  water: [0.42, 0.62, 0.76],
+  waterEdge: [0.20, 0.45, 0.66],
+  tree: [0.40, 0.54, 0.36],
+  treeTrunk: [0.42, 0.33, 0.25],
+  contour: [0.30, 0.26, 0.18],
+  contourIndex: [0.45, 0.30, 0.08],
+  select: [0.10, 0.42, 0.38],
+  highlight: [0.85, 0.45, 0.10],
+  observation: [0.70, 0.45, 0.05],
+  preserve: [0.15, 0.45, 0.30],
+  disputed: [0.75, 0.25, 0.15],
+};
+
+/** The palette in force. Mutated in place so every module keeps its reference. */
+export const PALETTE = { ...DARK };
+
+export function setTheme(name) {
+  const next = name === 'light' ? LIGHT : DARK;
+  for (const k of Object.keys(PALETTE)) delete PALETTE[k];
+  Object.assign(PALETTE, next);
+  return name === 'light' ? 'light' : 'dark';
+}
+
 
 const TYPE_COLOR = {
   structure: 'structure', room: 'room', wall: 'wall', road: 'road', path: 'path',
@@ -520,7 +562,14 @@ export class Renderer {
     gl.useProgram(this.prog);
     gl.uniformMatrix4fv(gl.getUniformLocation(this.prog, 'uViewProj'), false, viewProj);
     gl.uniform3fv(gl.getUniformLocation(this.prog, 'uSun'), sun);
-    gl.uniform4f(gl.getUniformLocation(this.prog, 'uFog'), PALETTE.sky[0], PALETTE.sky[1], PALETTE.sky[2], 1);
+    // Haze belongs to the VIEW, not to a fixed number of metres. It was fixed at
+    // 900 m — the width of the old window — so once the ground ran seven
+    // kilometres everything past the first nine hundred metres dissolved into
+    // the sky. Distance should soften a hillside, not delete it.
+    const far = Math.max(1200, this.cam?.dist ? this.cam.dist * 4.5 : 3000);
+    gl.uniform1f(gl.getUniformLocation(this.prog, 'uFogFar'), far);
+    gl.uniform4f(gl.getUniformLocation(this.prog, 'uFog'),
+      PALETTE.sky[0], PALETTE.sky[1], PALETTE.sky[2], 0.55);
 
     gl.disable(gl.BLEND);
     gl.depthMask(true);

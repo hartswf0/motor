@@ -415,24 +415,44 @@ body.subject #plan { bottom: var(--subjectH, calc(74px + var(--safe))); }
 .frameRow { display: flex; gap: 8px; }
 .frameRow .btn, .frameRow .tool { padding: 6px 10px; font-size: 12px; border-radius: 8px; }
 
-/* Orientation instruments. Bottom-left, out of the way of the say bar, always
-   present — because you cannot ask where you are only when you remember to. */
-#orient {
-  position: fixed; left: 12px; bottom: calc(84px + var(--safe)); z-index: 7;
-  display: flex; align-items: center; gap: 8px; pointer-events: none;
+
+
+/* ---------------------------------------------------------------- daylight */
+/* One theme switch for the page and the world alike. The dark palette is right
+   for a lit room and wrong outdoors, on a phone, or when the subject is the
+   shape of land — which people have read off white paper for two centuries. */
+body.day {
+  --bg: #eceae5;
+  --panel: rgba(252,251,249,.92);
+  --edge: rgba(20,22,26,.16);
+  --ink: #14161a;
+  --dim: #5c6068;
+  --accent: #0e6f60;
 }
-#compass { position: relative; display: grid; place-items: center; pointer-events: none; }
-#compass svg { display: block; }
-#bearing {
-  position: absolute; bottom: -3px; font-size: 9px; font-variant-numeric: tabular-nums;
-  color: var(--ink); background: rgba(10,12,16,.8); border-radius: 5px; padding: 0 4px;
+body.day #top .chip { color: var(--ink); }
+body.day .helpOverlay { background: rgba(240,239,236,.94); }
+body.day #plan { background: rgba(252,251,249,.9); }
+body.day #attribution { background: rgba(252,251,249,.86); color: var(--dim); }
+body.day #planOut, body.day #planIn, body.day #exploreBtn {
+  background: rgba(252,251,249,.9); color: var(--ink);
 }
-#whereAmI {
-  pointer-events: auto; cursor: copy; text-align: left;
-  background: rgba(10,12,16,.78); border: 1px solid var(--edge); border-radius: 9px;
-  padding: 5px 8px; display: grid; gap: 1px; color: var(--ink);
-  font-size: 11px; font-variant-numeric: tabular-nums; line-height: 1.35;
+body.day #exploreBtn.on { background: var(--accent); color: #fff; }
+body.day .toast { background: rgba(28,30,34,.94); color: #f4f3f0; }
+
+/* Where you are, in the header rather than floating over the world. */
+#top .where { display: flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
+#top .where .sub { color: var(--dim); font-size: 10.5px; }
+#compassRose { flex: none; transform-origin: 50% 50%; }
+#top .chip.icon { padding: 0; width: 30px; justify-content: center; }
+
+/* MOBILE: fewer things, bigger. A phone has no room for six small islands, so
+   the secondary chips step back and what remains is what you touch. */
+@media (max-width: 640px) {
+  #top { gap: 6px; flex-wrap: nowrap; overflow: hidden; }
+  #top .where .sub, #findChip, #themeChip { display: none; }
+  #top .where { font-size: 11px; }
+  #plan { width: 132px; height: 132px; }
+  #plan.exploring { width: min(78vw, 320px); height: min(78vw, 320px); }
+  #planOut, #planIn, #exploreBtn { width: 32px; height: 32px; font-size: 17px; }
+  #frameOffer { left: 8px; right: 8px; width: auto; bottom: calc(84px + var(--safe)); }
 }
-#whereAmI:hover { border-color: var(--accent); }
-#whereGround { color: var(--dim); font-size: 10px; }
-@media (max-height: 620px) { #orient { display: none; } }

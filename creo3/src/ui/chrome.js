@@ -92,6 +92,10 @@ export class Minimap {
     this.pick = null;          // [i, j] in neighbouring windows, e.g. [1, -1]
     this.loaded = new Set();   // "i,j" of neighbours already in this browser
     this.preview = null;       // the ground around you, elevation only
+    // How far the plan is pulled out. Initialised HERE, not in draw(): it was
+    // set on first paint, so pressing − before the plan had ever drawn computed
+    // undefined × 1.6 and left NaN in it, which is worse than doing nothing.
+    this.out = 1;
     this.bounds = null;
     this.dragging = false;
 
@@ -171,6 +175,7 @@ export class Minimap {
    * detail they cannot see.
    */
   drawRelief(g, t, X, Y, scale) {
+    const day = document.body.classList.contains('day');
     const px = Math.max(1, Math.min(6, (t.bounds[2] - t.bounds[0]) * scale / 140));
     const stepX = px / scale, stepY = px / scale;
     if (t.__plo === undefined) {
@@ -187,8 +192,13 @@ export class Minimap {
         const dzdx = (t.heightAt(x + stepX, y) - h) / stepX;
         const dzdy = (t.heightAt(x, y + stepY) - h) / stepY;
         const lit = Math.max(0, Math.min(1, 0.55 + (dzdx * 22 + dzdy * 18)));
+        // The plan follows the page's light. Written for a dark room, this was
+        // pale ground on black and vanished entirely in daylight — a relief map
+        // has to be ink on paper when the paper is white.
         const v = 0.09 + f * 0.20 + lit * 0.22;
-        g.fillStyle = `rgb(${Math.round(v * 244)},${Math.round(v * 252)},${Math.round(v * 236)})`;
+        g.fillStyle = day
+          ? `rgb(${Math.round(255 - v * 150)},${Math.round(254 - v * 150)},${Math.round(248 - v * 155)})`
+          : `rgb(${Math.round(v * 244)},${Math.round(v * 252)},${Math.round(v * 236)})`;
         g.fillRect(X(x), Y(y + stepY), px + 1, px + 1);
       }
     }
@@ -203,15 +213,18 @@ export class Minimap {
    * are drawn last and never hidden.
    */
   drawSkeleton(g, sk, X, Y, scale) {
+    const day = document.body.classList.contains('day');
     g.save();
     for (const w of sk.ways) {
       if (w.kind === 'water') {
-        g.strokeStyle = 'rgba(90,170,220,.55)';
+        g.strokeStyle = day ? 'rgba(40,110,170,.6)' : 'rgba(90,170,220,.55)';
         g.lineWidth = w.area ? 0.8 : 0.7;
       } else {
         // rank 0 is a motorway, 4 a tertiary lane
         const strength = 0.75 - w.rank * 0.11;
-        g.strokeStyle = `rgba(250,225,150,${Math.max(0.18, strength)})`;
+        g.strokeStyle = day
+          ? `rgba(150,105,20,${Math.max(0.28, strength)})`
+          : `rgba(250,225,150,${Math.max(0.18, strength)})`;
         g.lineWidth = Math.max(0.6, 1.9 - w.rank * 0.32);
       }
       g.beginPath();
@@ -223,13 +236,13 @@ export class Minimap {
     g.font = '9px ui-sans-serif, system-ui, sans-serif';
     for (const p of sk.places) {
       const x = X(p.at[0]), y = Y(p.at[1]);
-      g.fillStyle = 'rgba(255,255,255,.9)';
+      g.fillStyle = day ? 'rgba(20,22,26,.85)' : 'rgba(255,255,255,.9)';
       g.beginPath(); g.arc(x, y, p.kind === 'town' || p.kind === 'city' ? 2.6 : 1.8, 0, 7); g.fill();
       if (p.name) {
-        g.fillStyle = 'rgba(0,0,0,.65)';
         const w2 = g.measureText(p.name).width;
+        g.fillStyle = day ? 'rgba(252,251,249,.82)' : 'rgba(0,0,0,.65)';
         g.fillRect(x + 4, y - 7, w2 + 4, 11);
-        g.fillStyle = 'rgba(255,255,255,.92)';
+        g.fillStyle = day ? 'rgba(20,22,26,.95)' : 'rgba(255,255,255,.92)';
         g.fillText(p.name, x + 6, y + 1.5);
       }
     }
@@ -250,7 +263,8 @@ export class Minimap {
 
   /** Pull the plan out or in. Ground beyond what is loaded is simply absent. */
   zoom(by) {
-    this.out = Math.max(1, Math.min(8, this.out * by));
+    const from = Number.isFinite(this.out) ? this.out : 1;
+    this.out = Math.max(1, Math.min(8, from * by));
     return this.out;
   }
 
@@ -282,7 +296,7 @@ export class Minimap {
     // How far out the plan is pulled, independent of how much ground is loaded.
     // Past the loaded edge there is simply nothing yet — which is honest, and is
     // the affordance for going to get some.
-    this.out = this.out || 1;
+
     const grow = (this.explore ? 1.6 : 0) + (this.out - 1);
     const b = grow
       ? [pb[0] - (pb[2] - pb[0]) * grow, pb[1] - (pb[3] - pb[1]) * grow,
@@ -376,7 +390,7 @@ export class Minimap {
     // is simply unrecorded, and that difference must never be invisible.
     if (detail) {
       g.save();
-      g.strokeStyle = 'rgba(255,255,255,.5)';
+      g.strokeStyle = document.body.classList.contains('day') ? 'rgba(20,22,26,.55)' : 'rgba(255,255,255,.5)';
       g.lineWidth = 1.25;
       g.strokeRect(X(detail[0]), Y(detail[3]), (detail[2] - detail[0]) * scale, (detail[3] - detail[1]) * scale);
       g.restore();
@@ -443,8 +457,9 @@ export class Minimap {
     // NORTH. The plan is drawn north-up always, so this never rotates — which
     // is the point: it is the fixed thing the turning view is measured against.
     g.save();
-    g.strokeStyle = 'rgba(255,255,255,.75)';
-    g.fillStyle = 'rgba(255,255,255,.9)';
+    const dayN = document.body.classList.contains('day');
+    g.strokeStyle = dayN ? 'rgba(20,22,26,.7)' : 'rgba(255,255,255,.75)';
+    g.fillStyle = dayN ? 'rgba(20,22,26,.85)' : 'rgba(255,255,255,.9)';
     g.lineWidth = 1.2;
     const nx = w - 14, ny = h - 20;
     g.beginPath(); g.moveTo(nx, ny + 9); g.lineTo(nx, ny - 6); g.stroke();
