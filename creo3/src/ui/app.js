@@ -180,6 +180,22 @@ let lastInputAt = 0;
 export const stats = { drawn: 0, skipped: 0, labels: 0 };
 
 /** Something changed; the next frame should actually draw. */
+/**
+ * Remember a preference, or don't — but never throw.
+ *
+ * A 2.86 MB place was being autosaved into localStorage on a ~5 MB quota, so one
+ * imported site filled it and then EVERY subsequent write threw: choosing a
+ * palette crashed with QuotaExceededError because the ground had eaten the
+ * drawer. A preference is not important enough to break an application over.
+ */
+function remember(key, value) {
+  try { localStorage.setItem(key, value); return true; }
+  catch (err) {
+    console.warn(`[CREO] could not remember ${key}: ${err.name}`);
+    return false;
+  }
+}
+
 function invalidate({ plan = false } = {}) {
   S.dirty = true;
   if (plan) planDirty = true;
@@ -1769,11 +1785,11 @@ function openAIPanel() {
     if (k) setConfig({ key: k });
     if (sel.value && !sel.value.startsWith('\u2014')) setConfig({ model: sel.value });
     hide('setup');
-    localStorage.setItem('creo.sawSetup', '1');
+    remember('creo.sawSetup', '1');
     setMode_(S.commitment);
     if (hasKey()) toast(`Ready \u2014 ${getConfig().model || 'model unset'}. Say anything about this place.`);
   };
-  $('setupClose').onclick = () => { hide('setup'); localStorage.setItem('creo.sawSetup', '1'); };
+  $('setupClose').onclick = () => { hide('setup'); remember('creo.sawSetup', '1'); };
 
   $('setup').classList.toggle('tucked', $('tools').hidden);
   show('setup');
@@ -2041,7 +2057,7 @@ const hide = (id) => { $(id).hidden = true; };
 
 function setAuthor(name) {
   S.author = (name || '').trim();
-  if (S.author) localStorage.setItem('creo.author', S.author);
+  if (S.author) remember('creo.author', S.author);
   $('authorName').textContent = S.author || 'add your name';
   $('authorChip').classList.toggle('unset', !S.author);
 }
@@ -2093,7 +2109,12 @@ function save() {
   // Imported places are megabytes and already live in IndexedDB; only the
   // synthetic ones are small enough to mirror into localStorage.
   if (!PLACES.some((p) => p.key === S.placeKey)) return;
-  try { localStorage.setItem(`creo.save.${S.placeKey}`, S.world.save()); } catch { /* quota */ }
+  // Small synthetic places belong here; an imported site is megabytes and is
+  // already kept in IndexedDB, which is where things that size live. Writing it
+  // twice was what filled the drawer.
+  const payload = S.world.save();
+  if (payload.length < 900000) remember(`creo.save.${S.placeKey}`, payload);
+  else cachePut(`autosave.${S.placeKey}`, { payload, meta: { key: S.placeKey, autosave: true } });
 }
 /** Install a World that was just imported, without going back to disk. */
 function adoptWorld(world, key, name) {
@@ -2108,7 +2129,7 @@ function adoptWorld(world, key, name) {
   frameWorld();
   refreshChrome();
   S.dirty = true;
-  localStorage.setItem('creo.place', key);
+  remember('creo.place', key);
 }
 
 async function loadPlace(key) {
@@ -2150,7 +2171,7 @@ async function loadPlace(key) {
   S.dirty = true;
   // remember what actually opened, not what was asked for — otherwise a place
   // that is gone gets written back and 404s again on every single reload
-  localStorage.setItem('creo.place', S.placeKey);
+  remember('creo.place', S.placeKey);
 }
 
 // keyboard: every gesture has a key, because not everyone has a steady hand
@@ -2520,7 +2541,7 @@ function applyTheme(name) {
   document.body.classList.toggle('day', isLight(t));
   document.body.className = document.body.className.replace(/\btheme-\S+/g, '').trim();
   document.body.classList.add(`theme-${t}`);
-  localStorage.setItem('creo.theme', t);
+  remember('creo.theme', t);
   const meta = THEME_LIST.find((x) => x.key === t);
   $('themeChip').innerHTML = `<span class="swatch" style="background:${meta?.swatch || '#222'}"></span>`;
   $('themeChip').title = `${meta?.label || t} — tap to choose (T)`;
