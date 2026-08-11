@@ -475,7 +475,11 @@ body.day .toast { background: rgba(28,30,34,.94); color: #f4f3f0; }
    the secondary chips step back and what remains is what you touch. */
 @media (max-width: 640px) {
   #top { gap: 6px; flex-wrap: nowrap; overflow: hidden; }
-  #top .where .sub, #findChip, #themeChip { display: none; }
+  /* The palette chip STAYS. Hiding the control for choosing the light on the
+     one device where the light actually changes — indoors to outdoors, day to
+     night — was precisely backwards. The place-search chip steps back instead;
+     it is reachable from the place menu. */
+  #top .where .sub, #findChip { display: none; }
   #top .where { font-size: 11px; }
   #plan { width: 132px; height: 132px; }
   #plan.exploring { width: min(78vw, 320px); height: min(78vw, 320px); }
@@ -486,6 +490,18 @@ body.day .toast { background: rgba(28,30,34,.94); color: #f4f3f0; }
 }
 
 /* Paper: the page recedes so the drawing is the only thing with weight. */
+body.theme-black {
+  --bg: #000; --panel: rgba(14,15,17,.92); --edge: rgba(255,255,255,.22);
+  --ink: #f2f4f6; --dim: #9aa1a9; --lift: 0 2px 10px rgba(0,0,0,.8);
+}
+body.theme-parchment {
+  --bg: #e8dfc8; --panel: rgba(250,245,232,.94); --edge: rgba(60,45,20,.24);
+  --ink: #241c0e; --dim: #6a5a3c; --accent: #4a5c2a;
+}
+body.theme-ink {
+  --bg: #f7f6f3; --panel: rgba(255,255,255,.95); --edge: rgba(10,10,12,.26);
+  --ink: #08090b; --dim: #4a4d52; --accent: #0a4f45;
+}
 body.paper {
   --bg: #f6f5f2;
   --panel: rgba(255,255,255,.94);
@@ -508,4 +524,39 @@ body.paper {
   #top .chip { padding: 5px 7px; font-size: 12px; }
   #top .icon { width: 32px; height: 32px; }
   #whereAmI { font-size: 10.5px; }
+}
+
+/* The palette picker: see the choice before making it. */
+.themeMenu button { display: grid; grid-template-columns: 16px 1fr; gap: 8px; align-items: center; }
+.themeMenu .swatch { width: 14px; height: 14px; border-radius: 4px; border: 1px solid var(--edge); }
+.themeMenu .sub { grid-column: 2; }
+#themeChip .swatch {
+  width: 15px; height: 15px; border-radius: 4px; border: 1px solid var(--edge); display: block;
+}
+
+/* MOBILE: a control you cannot hit is not a control. Forty-four pixels is the
+   smallest reliable target on a touchscreen, and several here were thirty. */
+@media (max-width: 640px), (pointer: coarse) {
+  /* .icon.small is more specific than .icon, so raising .icon alone left the
+     entire right-hand rail at thirty-four pixels — the exact controls that are
+     hardest to hit on a phone. Name them. */
+  .icon, .icon.small { width: 44px; height: 44px; font-size: 19px; }
+  #say .icon, #say .icon.small { width: 48px; height: 48px; font-size: 20px; }
+  #modeDraw { width: 48px; }
+  #modeChip { min-height: 40px; }
+  /* A width is only a width if flex cannot take it back. These were set to 40
+     and 48 and arrived on screen at 33 and 29, squeezed by their own row. */
+  #undoBtn, #redoBtn { width: 40px; flex: 0 0 40px; }
+  #modeDraw, #micBtn { flex: 0 0 48px; }
+  /* the say row must fit the screen it is on, or its ends fall off the edge */
+  #say { left: 8px; right: 8px; gap: 6px; }
+  #sayWrap { min-width: 0; }
+  #sayInput { min-width: 0; }
+  #top .chip { flex: 0 1 auto; min-width: 0; }
+  #top .icon, #top .chip.icon { width: 40px; height: 40px; }
+  #planOut, #planIn, #exploreBtn { width: 38px; height: 38px; font-size: 19px; border-radius: 10px; }
+  #top .chip { min-height: 38px; }
+  .tool, .btn { min-height: 40px; }
+  /* the author is not needed to look at a place; it moves into the place menu */
+  #authorChip { display: none; }
 }

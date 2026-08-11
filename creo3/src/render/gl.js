@@ -56,8 +56,11 @@ void main() { outColor = vColor; }`;
 
 // Palette: the world is the subject, the interface is not.
 const DARK = {
-  ground: [0.36, 0.35, 0.30],
-  groundHigh: [0.47, 0.45, 0.38],
+  // A tenth of the scale between low ground and high is not enough to see a
+  // hill by, and this was the original — which is a large part of why the dark
+  // view read as a featureless wash for so long. Widened to a quarter.
+  ground: [0.20, 0.20, 0.18],
+  groundHigh: [0.50, 0.48, 0.41],
   structure: [0.62, 0.58, 0.52],
   roof: [0.52, 0.46, 0.41],
   iron: [0.55, 0.42, 0.36],
@@ -92,59 +95,105 @@ const DARK = {
 };
 
 /**
- * DAYLIGHT. Not an inverted dark theme — a different light.
+ * THE PALETTES.
  *
- * The dark palette is right for a lit room and wrong for almost everything else:
- * outdoors, in a meeting, on a phone, or when the thing under discussion is the
- * shape of land, which is what people have read off white paper for two hundred
- * years. Ground goes pale so contours and water read as ink on it, and the sky
- * goes near-white so that distance softens rather than swallows.
+ * A palette is not decoration; it is an argument about what should be legible.
+ * Each of these is built around a claim:
+ *
+ *   Night      the room is dark and the land should glow faintly
+ *   Black      true black, for a phone outdoors at night and for saving power
+ *   Daylight   the room is bright and the land is a lit model
+ *   Parchment  warm ground, brown ink — the surveyed drawing, not the photograph
+ *   Ink        the land nearly recedes so the LINES carry everything
+ *
+ * The mistake in the first attempt at Paper was tonal range: ground 0.955 and
+ * groundHigh 0.985 is a three-percent spread, so a hillside had nowhere to go
+ * and the whole place blew out to white. Every palette below keeps at least a
+ * fifth of the scale between low ground and high, whatever its key.
  */
+const BLACK = {
+  ...DARK,
+  sky: [0.0, 0.0, 0.0],
+  ground: [0.10, 0.10, 0.11],
+  groundHigh: [0.30, 0.30, 0.31],
+  structure: [0.42, 0.40, 0.38],
+  road: [0.20, 0.20, 0.21],
+  water: [0.10, 0.34, 0.52],
+  waterEdge: [0.35, 0.72, 0.98],
+  contour: [0.70, 0.66, 0.52],
+  contourIndex: [1.00, 0.82, 0.42],
+};
+
 const LIGHT = {
   ...DARK,
-  sky: [0.90, 0.91, 0.92],
-  ground: [0.83, 0.81, 0.75],
-  groundHigh: [0.93, 0.91, 0.86],
-  structure: [0.72, 0.68, 0.63],
-  road: [0.62, 0.61, 0.59],
-  path: [0.72, 0.69, 0.64],
-  water: [0.42, 0.62, 0.76],
-  waterEdge: [0.20, 0.45, 0.66],
-  tree: [0.40, 0.54, 0.36],
+  sky: [0.88, 0.90, 0.92],
+  ground: [0.66, 0.65, 0.60],
+  groundHigh: [0.92, 0.90, 0.85],
+  structure: [0.70, 0.66, 0.60],
+  road: [0.55, 0.54, 0.52],
+  path: [0.68, 0.65, 0.60],
+  water: [0.40, 0.60, 0.75],
+  waterEdge: [0.16, 0.42, 0.64],
+  tree: [0.38, 0.52, 0.34],
   treeTrunk: [0.42, 0.33, 0.25],
-  contour: [0.30, 0.26, 0.18],
-  contourIndex: [0.45, 0.30, 0.08],
-  select: [0.10, 0.42, 0.38],
-  highlight: [0.85, 0.45, 0.10],
-  observation: [0.70, 0.45, 0.05],
-  preserve: [0.15, 0.45, 0.30],
-  disputed: [0.75, 0.25, 0.15],
+  contour: [0.28, 0.24, 0.16],
+  contourIndex: [0.42, 0.27, 0.06],
+  select: [0.08, 0.40, 0.36],
+  highlight: [0.82, 0.42, 0.08],
+  observation: [0.68, 0.42, 0.04],
+  preserve: [0.13, 0.42, 0.28],
+  disputed: [0.72, 0.22, 0.12],
 };
+
+const PARCHMENT = {
+  ...LIGHT,
+  sky: [0.93, 0.90, 0.83],
+  ground: [0.74, 0.68, 0.56],
+  groundHigh: [0.94, 0.90, 0.80],
+  structure: [0.66, 0.58, 0.46],
+  road: [0.56, 0.50, 0.41],
+  path: [0.70, 0.64, 0.52],
+  water: [0.46, 0.60, 0.66],
+  waterEdge: [0.20, 0.40, 0.50],
+  tree: [0.45, 0.51, 0.33],
+  contour: [0.40, 0.29, 0.15],
+  contourIndex: [0.32, 0.18, 0.04],
+  select: [0.20, 0.36, 0.28],
+  highlight: [0.70, 0.36, 0.08],
+};
+
+const INK = {
+  ...LIGHT,
+  sky: [0.965, 0.962, 0.955],
+  ground: [0.80, 0.795, 0.78],
+  groundHigh: [0.985, 0.982, 0.975],
+  structure: [0.70, 0.69, 0.67],
+  road: [0.52, 0.51, 0.50],
+  path: [0.72, 0.71, 0.69],
+  water: [0.70, 0.80, 0.87],
+  waterEdge: [0.08, 0.30, 0.55],
+  tree: [0.66, 0.72, 0.62],
+  contour: [0.18, 0.16, 0.12],
+  contourIndex: [0.05, 0.04, 0.02],
+  select: [0.02, 0.34, 0.30],
+  highlight: [0.80, 0.30, 0.02],
+};
+
+export const THEME_LIST = [
+  { key: 'dark', label: 'Night', swatch: '#1a1d22' },
+  { key: 'black', label: 'Black', swatch: '#000000' },
+  { key: 'light', label: 'Daylight', swatch: '#d8d6cf' },
+  { key: 'parchment', label: 'Parchment', swatch: '#d8caa8' },
+  { key: 'ink', label: 'Ink', swatch: '#f4f3f0' },
+];
+
+const BY_NAME = { dark: DARK, black: BLACK, light: LIGHT, parchment: PARCHMENT, ink: INK };
 
 /** The palette in force. Mutated in place so every module keeps its reference. */
 export const PALETTE = { ...DARK };
 
-/**
- * PAPER — the survey drawing. Land almost colourless so that the LINES carry
- * everything: contours, water, the edges of things. For reading a place rather
- * than picturing it.
- */
-const PAPER = {
-  ...LIGHT,
-  sky: [0.97, 0.97, 0.96],
-  ground: [0.955, 0.95, 0.935],
-  groundHigh: [0.985, 0.98, 0.97],
-  structure: [0.86, 0.845, 0.82],
-  road: [0.80, 0.79, 0.77],
-  path: [0.87, 0.86, 0.83],
-  water: [0.62, 0.76, 0.85],
-  waterEdge: [0.13, 0.38, 0.60],
-  tree: [0.62, 0.71, 0.58],
-  contour: [0.36, 0.30, 0.20],
-  contourIndex: [0.30, 0.18, 0.05],
-};
-
-const BY_NAME = { dark: DARK, light: LIGHT, paper: PAPER };
+/** Which palettes want a light page under them. */
+export const isLight = (name) => ['light', 'parchment', 'ink'].includes(name);
 
 export function setTheme(name) {
   const next = BY_NAME[name] || DARK;

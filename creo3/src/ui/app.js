@@ -26,7 +26,7 @@ import { plan, commitPlan } from '../world/ops.js';
 import { ask } from '../world/query.js';
 import { consequenceOf } from '../sim/consequence.js';
 import { summarize } from '../world/certificate.js';
-import { Renderer, perspective, lookAt, multiply, screenRay, setTheme } from '../render/gl.js';
+import { Renderer, perspective, lookAt, multiply, screenRay, setTheme, THEME_LIST, isLight } from '../render/gl.js';
 import { pick, rayToGround } from '../render/pick.js';
 
 const $ = (id) => document.getElementById(id);
@@ -1939,6 +1939,14 @@ $('placeChip').onclick = async (ev) => {
   };
   menu.append(anywhere);
 
+  // On a phone the author chip steps out of the header, so it has to be here —
+  // hiding a control is only acceptable if it is reachable somewhere else.
+  const who = document.createElement('button');
+  who.innerHTML = `${S.author ? `Signing as ${escapeHTML(S.author)}` : 'Add your name'}`
+    + `<span class="sub">so the place can remember who changed what</span>`;
+  who.onclick = () => { menu.remove(); $('authorChip').click(); };
+  menu.append(who);
+
   // A window is a guess made before you have seen anything. Once the thing you
   // came for runs off the edge, widening it should not cost you the place you
   // are standing in.
@@ -2142,7 +2150,7 @@ addEventListener('keydown', (ev) => {
   else if (k === 'f') frameAll();
   else if (k === 'g') openFindPanel();
   else if (k === 'x') $('exploreBtn').click();
-  else if (k === 't') $('themeChip').click();
+  else if (k === 't') openThemeMenu();
   else if (k === '-' || k === '_') $('planOut').click();
   else if (k === '=' || k === '+') $('planIn').click();
   // In explore mode the arrows choose the window rather than move the camera —
@@ -2450,35 +2458,63 @@ $('whereAmI').onclick = async () => {
  * a muted one says look at the land — so this is a short list rather than a
  * switch, and it cycles.
  */
-const THEMES = [
-  { key: 'dark', label: 'Night' },
-  { key: 'light', label: 'Daylight' },
-  { key: 'paper', label: 'Paper' },
-];
-
 $('attribution').onclick = () => $('attribution').classList.toggle('open');
 
-/** Daylight or night, for the page and the world at once. */
+/**
+ * Choosing the light should not be a guessing game.
+ *
+ * Cycling was fine with two and useless with five: you cannot see what is next,
+ * so you press until something looks right. A short named list with a swatch
+ * each shows the choice before it is made, and says what each one is FOR —
+ * because a palette is an argument about what should be legible, not a mood.
+ */
+function openThemeMenu() {
+  document.querySelector('.themeMenu')?.remove();
+  const menu = document.createElement('div');
+  menu.className = 'menu themeMenu';
+  const r = $('themeChip').getBoundingClientRect();
+  menu.style.right = `${Math.max(8, innerWidth - r.right)}px`;
+  menu.style.top = `${r.bottom + 8}px`;
+  const now = localStorage.getItem('creo.theme') || 'dark';
+  const why = {
+    dark: 'a lit room',
+    black: 'outdoors at night, and for saving a phone',
+    light: 'daylight, and a lit model',
+    parchment: 'a surveyed drawing rather than a photograph',
+    ink: 'the land recedes so the lines carry everything',
+  };
+  for (const t of THEME_LIST) {
+    const b = document.createElement('button');
+    b.className = t.key === now ? 'on' : '';
+    b.innerHTML = `<span class="swatch" style="background:${t.swatch}"></span>${t.label}`
+      + `<span class="sub">${why[t.key] || ''}</span>`;
+    b.onclick = () => { menu.remove(); applyTheme(t.key); };
+    menu.append(b);
+  }
+  document.body.append(menu);
+  setTimeout(() => document.addEventListener('pointerdown', function off(ev) {
+    if (!menu.contains(ev.target) && ev.target !== $('themeChip')) {
+      menu.remove(); document.removeEventListener('pointerdown', off);
+    }
+  }), 0);
+}
+
 function applyTheme(name) {
   const t = setTheme(name);
-  document.body.classList.toggle('day', t !== 'dark');
-  document.body.classList.toggle('paper', t === 'paper');
+  document.body.classList.toggle('day', isLight(t));
+  document.body.className = document.body.className.replace(/\btheme-\S+/g, '').trim();
+  document.body.classList.add(`theme-${t}`);
   localStorage.setItem('creo.theme', t);
-  $('themeChip').textContent = t === 'dark' ? '◐' : t === 'light' ? '◑' : '◉';
-  $('themeChip').title = `${THEMES.find((x) => x.key === t)?.label || t} — tap for the next (T)`;
+  const meta = THEME_LIST.find((x) => x.key === t);
+  $('themeChip').innerHTML = `<span class="swatch" style="background:${meta?.swatch || '#222'}"></span>`;
+  $('themeChip').title = `${meta?.label || t} — tap to choose (T)`;
   // colours are baked into the vertex buffers at build time, and S.dirty makes
-  // the frame loop rebuild them — no separate call, and no call to a method
-  // that does not exist
+  // the frame loop rebuild them
   invalidate({ plan: true });
   S.dirty = true;
   return t;
 }
-$('themeChip').onclick = () => {
-  const now = localStorage.getItem('creo.theme') || 'dark';
-  const next = THEMES[(THEMES.findIndex((t) => t.key === now) + 1) % THEMES.length];
-  applyTheme(next.key);
-  toast(next.label);
-};
+$('themeChip').onclick = openThemeMenu;
 
 $('planOut').onclick = () => { minimap.zoom(1.6); invalidate({ plan: true }); sayPlanReach(); };
 $('planIn').onclick = () => { minimap.zoom(1 / 1.6); invalidate({ plan: true }); sayPlanReach(); };
