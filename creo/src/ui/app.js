@@ -135,6 +135,9 @@ function rebuild() {
     fidelity: S.fidelity,
     hidden: hiddenTypes(S.layersOff),
     contours: !S.layersOff.has('contours'),
+    // how much ground one pixel covers, so a three-metre creek can be drawn
+    // wide enough to exist on screen
+    metresPerPixel: (2 * S.cam.dist * Math.tan(0.55 / 2)) / Math.max(1, canvas.clientHeight),
     // Close in on a building and its roof comes off, so the rooms inside are
     // the thing you are working with.
     cutawayAt: S.cam.dist < 45 ? [S.cam.target[0], S.cam.target[1]] : null,

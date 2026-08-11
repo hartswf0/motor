@@ -371,7 +371,11 @@ export function osmToPlace(osm, { key, name, bbox, terrain = null, fetchedAt = n
       const width = parseFloat(tags.width) || (tags.waterway === 'river' ? 12 : tags.waterway === 'stream' ? 3 : 1.5);
       const pieces = clipToBox(fullLine, window_);
       if (!pieces.length) { stats.skipped++; continue; }
-      const line2 = pieces[0];
+      // Every piece, not just the first. A creek that leaves the window and
+      // comes back is several pieces, and keeping pieces[0] silently threw the
+      // rest of the watercourse away — the roads directly above this already
+      // loop, so the water was the odd one out.
+      for (const line2 of pieces) {
       const z = place.groundAt(line2[0][0], line2[0][1]);
       const kind = waterKind(tags) || 'stream';
       add({
@@ -383,6 +387,7 @@ export function osmToPlace(osm, { key, name, bbox, terrain = null, fetchedAt = n
         sim: { capacity: width * 0.8, permeability: 0.1 },
       }, el);
       stats.water++;
+      }
       continue;
     }
 

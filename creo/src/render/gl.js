@@ -66,6 +66,7 @@ export const PALETTE = {
   path: [0.46, 0.43, 0.38],
   drain: [0.25, 0.36, 0.44],
   water: [0.20, 0.42, 0.56],
+  waterEdge: [0.44, 0.78, 0.98],
   tree: [0.28, 0.44, 0.26],
   treeTrunk: [0.30, 0.25, 0.20],
   surface: [0.40, 0.44, 0.31],
@@ -132,7 +133,7 @@ export class Renderer {
   build(world, opts = {}) {
     const { ghosts = [], selection = new Set(), highlight = new Set(), overlay = null,
             preserved = new Set(), changed = new Set(), fidelity = 'high', hour = 14,
-            cutawayAt = null, hidden = new Set() } = opts;
+            cutawayAt = null, hidden = new Set(), metresPerPixel = 0.25 } = opts;
     this.fidelity = fidelity;
     const S = new Builder();        // opaque
     const T = new Builder();        // translucent
@@ -178,12 +179,7 @@ export class Renderer {
     // stored zTop: surfaces were authored against their centroid and roads
     // against their first vertex, so on a hillside that difference IS the error
     // — it drew an 86,000 m² wood twenty-one metres up in the air.
-    const flatOffset = (e) => (
-      e.type === 'observation' ? 0.10
-        : e.type === 'road' ? 0.06
-          : e.type === 'path' ? 0.05
-            : e.type === 'water' || e.type === 'stream' ? 0.02
-              : 0.03);
+    const flatOffset = (e) => FLAT_ORDER[e.type] ?? FLAT_ORDER.default;
 
     for (const e of ents) {
       if (hidden.has(e.type)) continue;          // a layer the person turned off
@@ -202,6 +198,23 @@ export class Renderer {
         T.draped(ring, ground, flatOffset(e) + 0.02, col, 0.18, cell, grid);
         L.ring(ring, e.zTop + 0.06, col, 0.95);
         this.buildPin(S, L, e, ring);
+      } else if (e.type === 'water' || e.type === 'stream') {
+        // A creek is three metres across. From three hundred metres up that is a
+        // third of a pixel, which is why the water has been invisible: it was
+        // being drawn correctly and drawn to nothing. Every map ever printed
+        // solves this the same way — draw the water wider than it is until its
+        // real width can carry itself, and outline it so the eye finds it at any
+        // distance. The widening is for the eye only; every query and every
+        // certificate still uses the true ring.
+        const ob = G.orientedBounds(ring);
+        const narrow = Math.min(ob.width, ob.depth);
+        const wantAcross = metresPerPixel * 5;
+        const drawn = narrow < wantAcross
+          ? G.offsetRing(ring, Math.min(12, (wantAcross - narrow) / 2))
+          : ring;
+        S.draped(drawn, ground, flatOffset(e), col, 1, cell, grid);
+        // the edge is what makes it findable when it is one pixel wide
+        L.ring(drawn, 0, PALETTE.waterEdge, 0.9, ground, flatOffset(e) + 0.05);
       } else if (isFlat(e)) {
         S.draped(ring, ground, flatOffset(e), col, 1, cell, grid);
       } else {
@@ -485,6 +498,25 @@ const MATERIAL_COLOURS = {
 };
 
 /**
+ * HOW HIGH EACH FLAT THING SITS ABOVE THE GROUND — which is to say, what covers
+ * what. Water used to sit at 2 cm and land cover at 3 cm, so every creek that
+ * ran through a wood was painted over by the wood: half of Boone's water was
+ * invisible for that reason alone, not because it was too small or too dark.
+ *
+ * Land cover first, then water on top of it, then the ways on top of the water,
+ * so a river shows through the forest it crosses while a bridge still reads as
+ * passing over the river rather than under it.
+ */
+export const FLAT_ORDER = {
+  surface: 0.03, parcel: 0.03,
+  water: 0.06, stream: 0.06, drain: 0.06,
+  path: 0.09,
+  road: 0.11,
+  observation: 0.14,
+  default: 0.03,
+};
+
+/**
  * The height of the terrain AS DRAWN at (x, y): flat triangles on the same grid
  * and the same diagonal the mesh uses, so a draped surface and the hill agree
  * exactly rather than approximately.
@@ -594,29 +626,13 @@ function terrainColor(h, t, water, x, y) {
     PALETTE.ground[1] + (PALETTE.groundHigh[1] - PALETTE.ground[1]) * f,
     PALETTE.ground[2] + (PALETTE.groundHigh[2] - PALETTE.ground[2]) * f,
   ];
-  // HYPSOMETRY — height read as colour, the way a physical map does it: low
-  // ground green, mid ground tan, high ground pale. Shading alone tells you
-  // where the sun is, not where the hill is; on 281 m of relief the whole
-  // hillside was one wash and no one could judge a site from it. This is only
-  // applied where there is relief worth reading — a delta stays its own colour.
-  const relief = t.__hi - t.__lo;
-  if (relief < 12) return base;
-  const strength = Math.min(0.5, 0.16 + relief / 900);
-  const BANDS = [
-    [0.00, [0.30, 0.38, 0.26]],
-    [0.30, [0.44, 0.47, 0.30]],
-    [0.55, [0.58, 0.53, 0.36]],
-    [0.78, [0.68, 0.62, 0.50]],
-    [1.00, [0.82, 0.80, 0.74]],
-  ];
-  let k = 0;
-  while (k < BANDS.length - 2 && f > BANDS[k + 1][0]) k++;
-  const [f0, c0] = BANDS[k], [f1, c1] = BANDS[k + 1];
-  const u = f1 === f0 ? 0 : (f - f0) / (f1 - f0);
-  return [0, 1, 2].map((i) => {
-    const tint = c0[i] + (c1[i] - c0[i]) * u;
-    return base[i] + (tint - base[i]) * strength;
-  });
+  // NO HYPSOMETRY. Green already means vegetation in this render — a wood, a
+  // lawn, a park — so spending it a second time on "low ground" gives one
+  // colour two jobs, and the result reads as arbitrary bands belonging to
+  // nothing. Elevation is stated exactly by the contours, which are a measured
+  // line rather than a wash. The ground stays one quiet material so that what
+  // is actually on it is the thing you see.
+  return base;
 }
 
 // ------------------------------------------------------------- mesh builders --
@@ -755,10 +771,13 @@ class LineBuilder {
     this.col.push(col[0], col[1], col[2], alpha, col[0], col[1], col[2], alpha);
     this.count += 2;
   }
-  ring(r, z, col, alpha) {
+  ring(r, z, col, alpha, groundAt = null, offset = 0) {
     for (let i = 0; i < r.length; i++) {
       const a = r[i], b = r[(i + 1) % r.length];
-      this.segment([a[0], a[1], z], [b[0], b[1], z], col, alpha);
+      // an outline on a hillside has to follow the hillside too
+      const za = groundAt ? groundAt(a[0], a[1]) + offset : z;
+      const zb = groundAt ? groundAt(b[0], b[1]) + offset : z;
+      this.segment([a[0], a[1], za], [b[0], b[1], zb], col, alpha);
     }
   }
 }

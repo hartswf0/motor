@@ -109,14 +109,14 @@
       36.212417050287456,
       -81.65835634751662
     ],
-    "fetchedAt": "2026-08-11T01:56:02.259Z",
+    "fetchedAt": "2026-08-11T02:09:39.721Z",
     "scale": "neighbourhood",
     "counts": {
-      "buildings": 164,
-      "roads": 141,
+      "buildings": 165,
+      "roads": 143,
       "paths": 92,
       "water": 6,
-      "surfaces": 44,
+      "surfaces": 43,
       "trees": 0,
       "walls": 4,
       "skipped": 0,

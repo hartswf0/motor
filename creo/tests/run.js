@@ -18,6 +18,7 @@ import { ask } from '../src/world/query.js';
 import { certify } from '../src/world/certificate.js';
 import { lexiconCollisions } from '../src/lang/lexicon.js';
 import { repairFor } from '../src/ai/operator.js';
+import { FLAT_ORDER } from '../src/render/gl.js';
 import { toGeoJSON, fromGeoJSON } from '../src/world/export.js';
 import { consequenceOf } from '../src/sim/consequence.js';
 import { runWater } from '../src/sim/water.js';
@@ -1147,6 +1148,20 @@ group('slopes', () => {
         assert(n > 500, `only ${n} interior samples at step ${step}`);
         eq(buried, 0, `${buried}/${n} of the surface is inside the hill at step ${step}, worst ${worst.toFixed(2)} m`);
       }
+    });
+
+    test('water is drawn over the land it runs through, and under the ways', () => {
+      // Half of Boone's water was invisible for one reason: a stream sat 2 cm
+      // above the ground and the wood it ran through sat 3 cm, so the wood won.
+      // Not too small, not too dark — covered.
+      assert(FLAT_ORDER.water > FLAT_ORDER.surface,
+        'a creek must show through the wood it runs through');
+      assert(FLAT_ORDER.water > FLAT_ORDER.parcel, 'and through a parcel');
+      assert(FLAT_ORDER.road > FLAT_ORDER.water,
+        'but a bridge crosses over a river, not under it');
+      assert(FLAT_ORDER.path > FLAT_ORDER.water, 'same for a footbridge');
+      assert(FLAT_ORDER.observation > FLAT_ORDER.road,
+        'what someone said sits above everything it is about');
     });
 
   test('a flat thing follows the hill instead of spanning it', () => {
