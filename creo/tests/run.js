@@ -22,6 +22,8 @@ import { FLAT_ORDER, Renderer } from '../src/render/gl.js';
 import { parseCoordinates, coordinatePlace } from '../src/import/geocode.js';
 import { reframe } from '../src/ui/importui.js';
 import { slug } from '../src/import/place.js';
+import { readGLB, bodyFromModel, boxBody } from '../src/world/body.js';
+import { planSeat, settleGround, refineTerrain } from '../src/world/seat.js';
 import { toGeoJSON, fromGeoJSON } from '../src/world/export.js';
 import { consequenceOf } from '../src/sim/consequence.js';
 import { runWater } from '../src/sim/water.js';
@@ -1283,6 +1285,118 @@ group('slopes', () => {
       console.log(`      (one plane: ${planeWorst.toFixed(0)} m off the ground · draped: ${drapedWorst.toFixed(1)} m)`);
     });
   }
+});
+
+// ================================================================ BODIES ====
+// Placing architecture in a place is not loading a mesh. A mesh cannot say what
+// it stands on, what it blocks, or what the ground must do to accept it — so a
+// body is a contract (footprint, floor datum, height, entrances) and the model
+// is only its appearance. What makes it real is the earthwork: a building on a
+// hillside is cut into and filled up to, and that has a volume.
+
+group('bodies', () => {
+  const glbPath = new URL('./fixtures-house.glb', import.meta.url);
+  const hasGLB = existsSync(glbPath);
+
+  test('a .glb is read into a contract, without a library', () => {
+    if (!hasGLB) return;
+    const buf = readFileSync(glbPath);
+    const { points } = readGLB(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
+    assert(points.length >= 8, `only ${points.length} vertices read`);
+    const body = bodyFromModel(points, { name: 'House', url: 'house.glb' });
+    const ob = G.orientedBounds(body.footprint);
+    // the fixture is 12 x 8 m with a ridge overhanging 0.9 m on each side
+    assert(Math.abs(ob.width - 12) < 0.2 && Math.abs(ob.depth - 8) < 0.2,
+      `footprint came out ${ob.width.toFixed(1)}×${ob.depth.toFixed(1)}, wanted 12×8`);
+    assert(Math.abs(body.height - 5.2) < 0.2, `height ${body.height.toFixed(1)}, wanted 5.2`);
+    // an eave is not ground: the overhang must not enlarge what it occupies
+    assert(ob.depth < 9.5, `the roof overhang was counted as footprint (${ob.depth.toFixed(1)} m)`);
+    assert(body.entrances.length >= 1, 'a building needs a way in');
+  });
+
+  test('a body can be built from dimensions alone', () => {
+    const b = boxBody({ width: 10, depth: 6, height: 4 });
+    eq(Math.round(Math.abs(G.area(b.footprint))), 60);
+    eq(b.height, 4);
+  });
+
+  test('ground too coarse to hold a building is refined until it can', () => {
+    // A 29 m elevation cell cannot express a 12 m house: seating one changed a
+    // single sample, so the earthwork was computed and had nowhere to go.
+    const w = World.load(readFileSync(new URL('../places/ravello-ravello-italia.json', import.meta.url), 'utf8'));
+    const coarse = w.place.terrain.cell;
+    assert(coarse > 20, `fixture should have a coarse DEM, has ${coarse.toFixed(1)} m`);
+    const r = refineTerrain(w.place, 3);
+    assert(r.refined, 'refusing to refine leaves buildings unrecordable');
+    assert(w.place.terrain.cell <= 3.1, `still ${w.place.terrain.cell} m`);
+    // and it says plainly that the new detail is interpolation, not survey
+    assert(/interpolation/.test(w.place.meta.refined.note), 'the invention must be declared');
+    // refining twice is a no-op, not a further invention
+    eq(refineTerrain(w.place, 3).refined, false);
+  });
+
+  test('seating a building cuts and fills the ground, and can be undone', () => {
+    const w = World.load(readFileSync(new URL('../places/ravello-ravello-italia.json', import.meta.url), 'utf8'));
+    refineTerrain(w.place, 3);
+    const body = boxBody({ width: 12, depth: 8, height: 3.2, name: 'House' });
+    // somewhere with real fall
+    const t = w.place.terrain;
+    let at = null, fall = 0;
+    for (let j = 20; j < t.ny - 20; j += 8) {
+      for (let i = 20; i < t.nx - 20; i += 8) {
+        const x = t.bounds[0] + i * t.cell, y = t.bounds[1] + j * t.cell;
+        const sp = G.groundSpan(G.circleRing(x, y, 10, 12), (a, b) => w.place.groundAt(a, b), 5);
+        if (sp && sp.hi - sp.lo > fall) { fall = sp.hi - sp.lo; at = [x, y]; }
+      }
+    }
+    assert(fall > 5, `no steep ground found in the fixture (best ${fall.toFixed(1)} m)`);
+
+    const cutSeat = planSeat(w, body, at, { level: 'cut' });
+    const fillSeat = planSeat(w, body, at, { level: 'fill' });
+    assert(cutSeat.floor < fillSeat.floor, 'cutting must put the floor lower than filling');
+    assert(cutSeat.cut > cutSeat.fill, 'a cut should mostly cut');
+    assert(fillSeat.fill > fillSeat.cut, 'a fill should mostly fill');
+
+    const balanced = planSeat(w, body, at, { level: 'balanced' });
+    const worst = Math.max(balanced.cut, balanced.fill);
+    assert(Math.abs(balanced.balance) < worst, 'balanced should move less earth than it keeps');
+
+    // the ground actually changes, and the pad is level under the house
+    const cornersBefore = balanced.ring.map((p) => w.place.groundAt(p[0], p[1]));
+    const undo = settleGround(w, balanced);
+    assert(undo.changed > 50, `only ${undo.changed} samples changed — the ground cannot hold a building`);
+    const cornersAfter = balanced.ring.map((p) => w.place.groundAt(p[0], p[1]));
+    for (const z of cornersAfter) {
+      assert(Math.abs(z - balanced.floor) < 0.6, `corner at ${z.toFixed(1)} is not on the floor ${balanced.floor.toFixed(1)}`);
+    }
+    // and it is a proposal, so it goes back exactly
+    undo.restore();
+    const restored = balanced.ring.map((p) => w.place.groundAt(p[0], p[1]));
+    for (let i = 0; i < restored.length; i++) {
+      assert(Math.abs(restored[i] - cornersBefore[i]) < 1e-6, 'the ground did not go back');
+    }
+  });
+
+  test('turning a house along the contour is measurably cheaper', () => {
+    // The Henry House is sited "along the contour rather than across it". That
+    // is not a style: it is an earthwork claim, and a place model can check it.
+    const w = World.load(readFileSync(new URL('../places/ravello-ravello-italia.json', import.meta.url), 'utf8'));
+    refineTerrain(w.place, 3);
+    const body = boxBody({ width: 14, depth: 7, height: 3.2, name: 'House' });
+    const t = w.place.terrain;
+    const at = [t.bounds[0] + (t.bounds[2] - t.bounds[0]) * 0.5,
+      t.bounds[1] + (t.bounds[3] - t.bounds[1]) * 0.5];
+    let best = null, worstEarth = 0;
+    for (let deg = 0; deg < 180; deg += 15) {
+      const s = planSeat(w, body, at, { level: 'balanced', rotation: (deg * Math.PI) / 180 });
+      const earth = s.cut + s.fill;
+      if (!best || earth < best.earth) best = { deg, earth };
+      if (earth > worstEarth) worstEarth = earth;
+    }
+    assert(worstEarth > best.earth * 1.2,
+      `orientation barely mattered: best ${Math.round(best.earth)} m³ vs worst ${Math.round(worstEarth)} m³`);
+    console.log(`      (best orientation ${best.deg}° moves ${Math.round(best.earth)} m³; worst moves ${Math.round(worstEarth)} m³)`);
+  });
 });
 
 // ============================================================= LOCATING ====

@@ -18,6 +18,8 @@ import { runWater } from '../sim/water.js';
 import { toGeoJSON } from '../world/export.js';
 import { World } from '../core/world.js';
 import { makeContext } from '../lang/deixis.js';
+import { readGLB, bodyFromModel, boxBody } from '../world/body.js';
+import { planSeat, settleGround, refineTerrain, disturbances } from '../world/seat.js';
 import { describeRelations } from '../core/relations.js';
 import { interpret } from '../lang/interpret.js';
 import { plan, commitPlan } from '../world/ops.js';
@@ -502,6 +504,8 @@ function panBy(dx, dy) {
 function tap(x, y, additive) {
   const hit = pick(S.world, rayAt(x, y), { fidelity: S.fidelity });
   S.pointer = hit.point;
+  // A body in hand goes where you tap, and the ground answers for it.
+  if (inHand && hit.point) { placeInHand(hit.point); return; }
   if (hit.entity) {
     if (additive) { S.selection.has(hit.entity.id) ? S.selection.delete(hit.entity.id) : S.selection.add(hit.entity.id); }
     else S.selection = new Set([hit.entity.id]);
@@ -577,7 +581,33 @@ function context() {
   });
 }
 
+/**
+ * "put a house here" is not a proposal for a new structure in the general
+ * sense — it is a request to seat a body, which is an earthwork. Catch it
+ * before the grammar turns it into an ordinary volume with no ground beneath it.
+ */
+function trySeatBySaying(text) {
+  const t = String(text).toLowerCase();
+  if (!/\b(put|place|drop|set|site|seat)\b/.test(t)) return false;
+  if (!/\b(house|building|model|henry|cabin|shed|barn|home)\b/.test(t)) return false;
+  const at = S.pointer || (S.stroke && G.centroid(S.stroke))
+    || [S.cam.target[0], S.cam.target[1]];
+  if (!inHand) {
+    const m = t.match(/(\d+(?:\.\d+)?)\s*(?:m|metre|meter)?\s*(?:x|by|×)\s*(\d+(?:\.\d+)?)/);
+    inHand = boxBody({
+      name: /henry/.test(t) ? 'Henry House' : 'House',
+      width: m ? parseFloat(m[1]) : 12,
+      depth: m ? parseFloat(m[2]) : 8,
+      height: /storey|story|two/.test(t) ? 6 : 3.2,
+    });
+  }
+  const level = /\bcut\b|\binto the (hill|slope)\b/.test(t) ? 'cut'
+    : /\bfill\b|\bon a plinth\b|\braise\b/.test(t) ? 'fill' : 'balanced';
+  return placeInHand(at, { level });
+}
+
 function saySomething(text) {
+  if (trySeatBySaying(text)) return;
   if (!text.trim()) return;
   const ctx = context();
   const intent = interpret(text, ctx);
@@ -1410,6 +1440,114 @@ function goToEntity(id) {
 
 const escapeHTML = (v) => String(v).replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
 
+// ------------------------------------------------------------------ bodies --
+// Placing a building is the one operation where the ground has to answer back.
+// Everything else CREO proposes sits ON the world; this one changes what the
+// world IS underneath it, so it is shown as an earthwork with a volume before
+// anyone accepts it.
+
+let inHand = null;            // the body waiting to be put somewhere
+let seated = null;            // the earthwork currently being proposed
+
+export async function bodyFromURL(url, name) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${res.status} fetching ${url}`);
+  const { points } = readGLB(await res.arrayBuffer());
+  return bodyFromModel(points, { name: name || url.split('/').pop(), url });
+}
+
+/** Take a body in hand. The next tap on the ground puts it there. */
+function takeInHand(body) {
+  inHand = body;
+  const ob = G.orientedBounds(body.footprint);
+  toast(`${body.name} — ${ob.width.toFixed(1)}×${ob.depth.toFixed(1)} m, ${body.height.toFixed(1)} m tall. Tap the ground to put it somewhere.`);
+}
+
+/**
+ * Seat the body in hand at a point: work out the earthwork, settle the ground,
+ * and let everything that reads the ground answer to the new shape.
+ */
+function placeInHand(at, { rotation = null, level = 'balanced' } = {}) {
+  if (!inHand) return false;
+  try {
+    if (S.world.place.terrain && S.world.place.terrain.cell > 4) {
+      const r = refineTerrain(S.world.place, 3);
+      if (r.refined) toast(`The ground here is recorded every ${r.from.toFixed(0)} m — too coarse for a building, so it has been read at ${r.cell} m. What lies between the original samples is interpolation, not survey.`);
+    }
+    // Which way to turn it is not a style question on a hillside: it is the
+    // difference between cutting a terrace and cutting a canyon. If nobody
+    // says, take the cheapest quarter-turn and say what it saved.
+    let rot = rotation;
+    let saved = null;
+    if (rot === null) {
+      let best = null, worst = 0;
+      for (let deg = 0; deg < 180; deg += 15) {
+        const s = planSeat(S.world, inHand, at, { level, rotation: (deg * Math.PI) / 180 });
+        const earth = s.cut + s.fill;
+        if (!best || earth < best.earth) best = { deg, earth };
+        if (earth > worst) worst = earth;
+      }
+      rot = (best.deg * Math.PI) / 180;
+      saved = worst - best.earth;
+    }
+
+    const seat = planSeat(S.world, inHand, at, { level, rotation: rot });
+    if (seated) seated.undo.restore();
+    const undo = settleGround(S.world, seat);
+    seated = { seat, undo, hit: disturbances(S.world, seat) };
+
+    // the building itself, as an ordinary entity the certificate can judge
+    S.world.place.put(makeBody(S.world, inHand, seat));
+    S.selection = new Set([bodyId(inHand, seat)]);
+    invalidate({ plan: true });
+    S.dirty = true;
+    showTools();
+
+    const bits = [seat.reads];
+    if (saved > 1) bits.push(`Turned ${Math.round((rot * 180) / Math.PI)}° along the contour, which saves ${Math.round(saved)} m³.`);
+    const ways = seated.hit.filter((h) => h.moves !== null && Math.abs(h.moves) > 0.3);
+    if (ways.length) bits.push(`${ways[0].name} moves ${ways[0].moves > 0 ? 'up' : 'down'} ${Math.abs(ways[0].moves).toFixed(1)} m.`);
+    toast(bits.join(' '));
+    return true;
+  } catch (err) {
+    reportFailure('Could not seat that', err);
+    return false;
+  }
+}
+
+function bodyId(body, seat) { return `body-${body.id}-${Math.round(seat.at[0])}-${Math.round(seat.at[1])}`; }
+
+function makeBody(world, body, seat) {
+  return {
+    id: bodyId(body, seat),
+    type: 'structure',
+    name: body.name,
+    footprint: seat.ring,
+    zBase: seat.floor,
+    zTop: seat.floor + body.height,
+    epistemic: 'PROPOSED',
+    collision: 'solid',
+    sim: { permeability: 0, roughness: 0.02 },
+    provenance: { author: S.author || 'you', how: 'seated on the ground', when: new Date().toISOString() },
+    props: {
+      body: { id: body.id, url: body.appearance?.url || null, rotation: seat.rotation },
+      earthwork: { cut: Math.round(seat.cut), fill: Math.round(seat.fill), floor: +seat.floor.toFixed(2) },
+    },
+  };
+}
+
+/** Put the ground back and take the building away. */
+function unseat() {
+  if (!seated) return;
+  seated.undo.restore();
+  const id = bodyId(seated.seat.body, seated.seat);
+  try { S.world.place.remove?.(id); } catch { /* it may already be gone */ }
+  seated = null;
+  invalidate({ plan: true });
+  S.dirty = true;
+  toast('The ground is as it was.');
+}
+
 // ------------------------------------------------------------------- setup --
 // The key belongs on the page, not three gestures down. CREO works without one,
 // so this says so rather than blocking the door.
@@ -2131,6 +2269,7 @@ window.CREO = {
   select: (ids) => { S.selection = new Set(ids); S.dirty = true; showTools(); },
   frameAll, openNote, openHelp, runAssistant, setMode: setMode_, openFindPanel, goToEntity,
   openSetup: openAIPanel, askSubject, showTools, rankModel, captureView, PREFERRED,
+  takeInHand, placeInHand, unseat, bodyFromURL, boxBody, inHand: () => inHand, seated: () => seated,
   get minimap() { return minimap; },
   _minimap: () => minimap,
   pointAt: (p) => { S.pointer = p; },

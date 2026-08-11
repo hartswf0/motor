@@ -568,7 +568,12 @@ export const FLAT_ORDER = {
  */
 export function surfaceOf(t, fidelity = 'high') {
   if (!t) return null;
-  const sub = { high: 3, medium: 2, low: 1, symbolic: 1 }[fidelity] ?? 2;
+  // Subdivide a coarse DEM, never a fine one. Once the ground is refined to
+  // building scale, subdividing again would put a million triangles on screen
+  // to describe interpolation of interpolation. The lattice is kept at roughly
+  // eight metres, whatever the source cell happens to be.
+  const want = { high: 8, medium: 12, low: 24, symbolic: 24 }[fidelity] ?? 12;
+  const sub = Math.max(1, Math.min(3, Math.round(t.cell / want)));
   const span = t.cell / sub;
   return {
     t, span, sub,
