@@ -1425,8 +1425,15 @@ group('bodies', () => {
     assert(r.field && r.field.cell <= 3.1, `the fine window is ${r.field?.cell} m`);
     // and it says plainly that the new detail is interpolation, not survey
     assert(/interpolation/.test(w.place.meta.refined.note), 'the invention must be declared');
-    // refining twice is a no-op, not a further invention
-    eq(refineTerrain(w.place, 3).refined, false);
+    // Refining the same window twice was a no-op only because the old version
+    // replaced the ground and there was nothing coarse left to refine. Now the
+    // right property is that it INVENTS NOTHING FURTHER: same window, same
+    // ground, to the millimetre.
+    const sample = [12, -7];
+    const zBefore = w.place.groundAt(sample[0], sample[1]);
+    refineTerrain(w.place, 3, [0, 0], 90);
+    assert(Math.abs(w.place.groundAt(sample[0], sample[1]) - zBefore) < 1e-3,
+      'refining the same window a second time changed the ground');
   });
 
   test('seating a building cuts and fills the ground, and can be undone', () => {
