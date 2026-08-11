@@ -185,16 +185,28 @@ export function refineTerrain(place, targetCell = 3, around = null, radius = 90)
       fine.prov[k] = 1;                       // INTERPOLATED — declared, always
     }
   }
-  // the coarse ground remains, and the fine window sits inside it
-  place.terrain = fine;
-  place.coarseGround = t;
+  // THE COARSE GROUND MUST SURVIVE.
+  //
+  // This said "the coarse ground remains" and then replaced place.terrain with
+  // the window — so seating a house on an 11.2 km site left a 0.3 km site, and
+  // the topography a viewshed depends on was destroyed by the act of putting a
+  // building on it. The fine window is written back INTO the coarse ground
+  // instead: same lattice, same one surface, more detail where the work is.
+  for (let j = 0; j < t.ny; j++) {
+    for (let i = 0; i < t.nx; i++) {
+      const x = t.bounds[0] + i * t.cell, y = t.bounds[1] + j * t.cell;
+      if (x < clipped[0] || x > clipped[2] || y < clipped[1] || y > clipped[3]) continue;
+      t.data[t.idx(i, j)] = fine.heightAt(x, y);
+    }
+  }
+  place.fineWindow = fine;      // kept for seating; the place keeps its ground
   place.meta = place.meta || {};
   place.meta.refined = {
     from: +t.cell.toFixed(1), to: targetCell,
     over: `${Math.round(clipped[2] - clipped[0])}×${Math.round(clipped[3] - clipped[1])} m`,
     note: 'heights between the original samples are interpolation, not survey',
   };
-  return { refined: true, from: t.cell, cell: fine.cell, samples: fine.data.length, bounds: clipped };
+  return { refined: true, from: t.cell, cell: fine.cell, samples: fine.data.length, bounds: clipped, field: fine };
 }
 
 /**
