@@ -74,6 +74,8 @@ export const PALETTE = {
   light: [0.72, 0.70, 0.60],
   observation: [0.95, 0.72, 0.25],
   disputed: [0.90, 0.45, 0.30],
+  contour: [0.98, 0.94, 0.82],
+  contourIndex: [1.00, 0.86, 0.52],
   bridge: [0.60, 0.55, 0.48],
   furniture: [0.62, 0.55, 0.45],
   opening: [0.85, 0.90, 0.95],
@@ -137,6 +139,10 @@ export class Renderer {
     const L = new LineBuilder();
 
     if (world.place.terrain && fidelity !== 'symbolic') this.buildTerrain(S, world, overlay, fidelity);
+    this.contourInterval = 0;
+    if (world.place.terrain && fidelity !== 'symbolic' && opts.contours !== false) {
+      this.buildContours(L, world, fidelity);
+    }
 
     const ents = world.entities();
     const detail = { high: 0, medium: 1, low: 2, symbolic: 3 }[fidelity];
@@ -151,12 +157,17 @@ export class Renderer {
     // the worst deviation from 6.0 m to 3.0 m. Coarser when drawing cheaply.
     const dem = world.place.terrain?.cell ?? 24;
     const cell = Math.max(8, Math.min(16, dem / 2)) * (detail >= 2 ? 2 : 1);
-    // What the flat thing was authored against, so its own thickness survives
-    // the move onto real ground.
-    const groundOf = (e) => {
-      const r = world.place.ringOf(e);
-      return r && r.length ? ground(r[0][0], r[0][1]) : e.zTop;
-    };
+    // A thing that lies on the ground is at the ground, plus a hair to stop it
+    // fighting the terrain for the same pixels. Do NOT reconstruct this from the
+    // stored zTop: surfaces were authored against their centroid and roads
+    // against their first vertex, so on a hillside that difference IS the error
+    // — it drew an 86,000 m² wood twenty-one metres up in the air.
+    const flatOffset = (e) => (
+      e.type === 'observation' ? 0.10
+        : e.type === 'road' ? 0.06
+          : e.type === 'path' ? 0.05
+            : e.type === 'water' || e.type === 'stream' ? 0.02
+              : 0.03);
 
     for (const e of ents) {
       if (hidden.has(e.type)) continue;          // a layer the person turned off
@@ -172,11 +183,11 @@ export class Renderer {
       } else if (e.type === 'observation') {
         // What someone said about a place should mark it, not bury it. An
         // opaque fill over a drawn area hid the very thing being discussed.
-        T.draped(ring, ground, (e.zTop - groundOf(e)) + 0.05, col, 0.18, cell);
+        T.draped(ring, ground, flatOffset(e) + 0.02, col, 0.18, cell);
         L.ring(ring, e.zTop + 0.06, col, 0.95);
         this.buildPin(S, L, e, ring);
       } else if (isFlat(e)) {
-        S.draped(ring, ground, (e.zTop - groundOf(e)) + 0.03, col, 1, cell);
+        S.draped(ring, ground, flatOffset(e), col, 1, cell);
       } else {
         // Standing inside a building, the roof is the one thing you do not want
         // to look at. What matters changes with where you are (§17).
@@ -208,7 +219,7 @@ export class Renderer {
       if (!ring || ring.length < 3) continue;
       const bad = g.__invalid;
       const col = bad ? PALETTE.ghostBad : PALETTE.ghost;
-      if (isFlat(g)) T.draped(ring, ground, (g.zTop - groundOf(g)) + 0.05, col, 0.42, cell);
+      if (isFlat(g)) T.draped(ring, ground, flatOffset(g) + 0.04, col, 0.42, cell);
       else T.prism(ring, g.zBase, g.zTop, col, col, 0.38);
       L.ring(ring, g.zTop + 0.08, col, 1);
       L.ring(ring, g.zBase + 0.02, col, 0.5);
@@ -237,6 +248,73 @@ export class Renderer {
         B.quad([x0, y0, h00], [x1, y0, h10], [x1, y1, h11], [x0, y1, h01], c, 1);
       }
     }
+  }
+
+  /**
+   * CONTOURS — the one drawing convention that makes ground legible.
+   *
+   * A shaded surface tells you where the light is, not where the hill is. On
+   * 281 m of relief a hillside reads as a flat wash, and no one can judge a site
+   * from it. Contours give the eye something to count: spacing IS steepness,
+   * closed rings ARE summits and hollows, and both survive any camera angle.
+   *
+   * The interval is chosen from the actual relief so a flat delta gets metre
+   * lines and a mountain gets fifties, and every fifth line is drawn heavier —
+   * the index contour, which is how a map is read.
+   */
+  buildContours(L, world, fidelity) {
+    const t = world.place.terrain;
+    if (!t) return;
+    let lo = Infinity, hi = -Infinity;
+    for (let k = 0; k < t.data.length; k++) {
+      const v = t.data[k];
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
+    }
+    const relief = hi - lo;
+    if (!isFinite(relief) || relief < 1.5) return;      // nothing to say about a plain
+
+    // roughly 25 lines across whatever relief this place has, rounded to a
+    // number a person reads without effort
+    const raw = relief / 25;
+    const pow = Math.pow(10, Math.floor(Math.log10(raw)));
+    const interval = [1, 2, 5, 10].map((m) => m * pow).find((v) => v >= raw) || 10 * pow;
+    const step = fidelity === 'low' ? 2 : 1;
+
+    // marching squares on the heightfield: linear interpolation along each cell
+    // edge that the level crosses, which puts the line exactly where the data
+    // says the height is, not where a shader guesses.
+    const zAt = (i, j) => t.at(i, j);
+    const first = Math.ceil(lo / interval) * interval;
+    for (let level = first; level <= hi; level += interval) {
+      const index = Math.abs(level / interval) % 5 < 0.001;
+      const col = index ? PALETTE.contourIndex : PALETTE.contour;
+      const alpha = index ? 0.85 : 0.42;
+      for (let j = 0; j + step < t.ny; j += step) {
+        for (let i = 0; i + step < t.nx; i += step) {
+          const x0 = t.bounds[0] + i * t.cell, y0 = t.bounds[1] + j * t.cell;
+          const x1 = t.bounds[0] + (i + step) * t.cell, y1 = t.bounds[1] + (j + step) * t.cell;
+          const h = [zAt(i, j), zAt(i + step, j), zAt(i + step, j + step), zAt(i, j + step)];
+          const pts = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+          const cross = [];
+          for (let k = 0; k < 4; k++) {
+            const a = h[k], b = h[(k + 1) % 4];
+            if ((a < level) === (b < level)) continue;
+            const f = (level - a) / (b - a);
+            const pa = pts[k], pb = pts[(k + 1) % 4];
+            cross.push([pa[0] + (pb[0] - pa[0]) * f, pa[1] + (pb[1] - pa[1]) * f]);
+          }
+          // 2 crossings is a segment; 4 is a saddle, drawn as two
+          if (cross.length === 2) {
+            L.segment([cross[0][0], cross[0][1], level + 0.12], [cross[1][0], cross[1][1], level + 0.12], col, alpha);
+          } else if (cross.length === 4) {
+            L.segment([cross[0][0], cross[0][1], level + 0.12], [cross[1][0], cross[1][1], level + 0.12], col, alpha);
+            L.segment([cross[2][0], cross[2][1], level + 0.12], [cross[3][0], cross[3][1], level + 0.12], col, alpha);
+          }
+        }
+      }
+    }
+    this.contourInterval = interval;
   }
 
   buildTree(B, e, ring, detail) {
@@ -472,11 +550,34 @@ function terrainColor(h, t, water, x, y) {
     if (t.__hi - t.__lo < 1) { t.__lo -= 0.5; t.__hi += 0.5; }
   }
   const f = Math.max(0, Math.min(1, (h - t.__lo) / (t.__hi - t.__lo)));
-  return [
+  const base = [
     PALETTE.ground[0] + (PALETTE.groundHigh[0] - PALETTE.ground[0]) * f,
     PALETTE.ground[1] + (PALETTE.groundHigh[1] - PALETTE.ground[1]) * f,
     PALETTE.ground[2] + (PALETTE.groundHigh[2] - PALETTE.ground[2]) * f,
   ];
+  // HYPSOMETRY — height read as colour, the way a physical map does it: low
+  // ground green, mid ground tan, high ground pale. Shading alone tells you
+  // where the sun is, not where the hill is; on 281 m of relief the whole
+  // hillside was one wash and no one could judge a site from it. This is only
+  // applied where there is relief worth reading — a delta stays its own colour.
+  const relief = t.__hi - t.__lo;
+  if (relief < 12) return base;
+  const strength = Math.min(0.5, 0.16 + relief / 900);
+  const BANDS = [
+    [0.00, [0.30, 0.38, 0.26]],
+    [0.30, [0.44, 0.47, 0.30]],
+    [0.55, [0.58, 0.53, 0.36]],
+    [0.78, [0.68, 0.62, 0.50]],
+    [1.00, [0.82, 0.80, 0.74]],
+  ];
+  let k = 0;
+  while (k < BANDS.length - 2 && f > BANDS[k + 1][0]) k++;
+  const [f0, c0] = BANDS[k], [f1, c1] = BANDS[k + 1];
+  const u = f1 === f0 ? 0 : (f - f0) / (f1 - f0);
+  return [0, 1, 2].map((i) => {
+    const tint = c0[i] + (c1[i] - c0[i]) * u;
+    return base[i] + (tint - base[i]) * strength;
+  });
 }
 
 // ------------------------------------------------------------- mesh builders --

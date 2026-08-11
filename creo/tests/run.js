@@ -1071,7 +1071,29 @@ group('slopes', () => {
       eq(bad.slice(0, 3).join('; '), '', `${bad.length} of them, on 281 m of relief`);
     });
 
-    test('a flat thing follows the hill instead of spanning it', () => {
+      test('a flat thing lies on the ground, whatever it was authored against', () => {
+      // Surfaces were authored from their CENTROID and roads from their FIRST
+      // VERTEX. Reconstructing the drape offset from the stored zTop therefore
+      // inherited that difference as error — it put an 86,000 m² wood sixty
+      // metres in the air over Boone. A thing that lies on the ground is at the
+      // ground, and nothing about its stored height may change that.
+      const FLAT = ['path', 'road', 'surface', 'parcel', 'drain', 'water', 'stream'];
+      let worst = 0, worstName = '';
+      for (const e of world.entities()) {
+        if (!FLAT.includes(e.type)) continue;
+        const ring = world.ringOf(e);
+        if (!ring || ring.length < 3) continue;
+        const span = G.groundSpan(ring, ground);
+        if (!span) continue;
+        // what the old rule would have produced, as the thing being guarded against
+        const authored = Math.abs(e.zTop - ground(ring[0][0], ring[0][1]));
+        if (authored > worst) { worst = authored; worstName = e.name || e.id; }
+      }
+      assert(worst > 5, `expected a large authored discrepancy to guard against, saw ${worst.toFixed(1)} m`);
+      console.log(`      (worst stored-vs-first-vertex gap: ${worst.toFixed(1)} m on ${worstName} — no longer used)`);
+    });
+
+  test('a flat thing follows the hill instead of spanning it', () => {
       const FLAT = ['path', 'road', 'surface', 'parcel', 'drain', 'water', 'stream'];
       const cell = Math.max(8, Math.min(16, (P.terrain?.cell ?? 24) / 2));
       let planeWorst = 0, drapedWorst = 0;

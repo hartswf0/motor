@@ -15,6 +15,7 @@ export const LAYERS = [
   { key: 'nature', label: 'Trees', types: ['tree'] },
   { key: 'places', label: 'Shops & stops', types: ['marker'] },
   { key: 'notes', label: 'What people said', types: ['observation'] },
+  { key: 'contours', label: 'Contour lines', types: [] },
 ];
 
 export function hiddenTypes(off) {
@@ -204,6 +205,7 @@ export class Minimap {
 const HELP = [
   ['Move around', 'Drag the map to move. Scroll or pinch to zoom — it zooms toward where you point.'],
   ['Turn the view', 'Right-drag, or hold Shift and drag. Two fingers twist to turn on a touchscreen.'],
+  ['Go to a building', 'Press <b>G</b> or ⌕ and type its name. It flies there and hands it to you, ready to talk about.'],
   ['Lost?', 'Press <b>F</b>, or the ⤢ button, to see the whole place again. The small plan shows where you are — tap it to go there.'],
   ['Choose something', 'Tap it. Its name and size appear, with things you can do to it.'],
   ['Say something', 'Tap the bar and speak plainly: <i>“this floods when it rains”</i>, <i>“we need a drain here”</i>, <i>“why is this here?”</i>'],

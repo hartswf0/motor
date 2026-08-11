@@ -134,6 +134,7 @@ function rebuild() {
     changed,
     fidelity: S.fidelity,
     hidden: hiddenTypes(S.layersOff),
+    contours: !S.layersOff.has('contours'),
     // Close in on a building and its roof comes off, so the rooms inside are
     // the thing you are working with.
     cutawayAt: S.cam.dist < 45 ? [S.cam.target[0], S.cam.target[1]] : null,
@@ -1295,6 +1296,7 @@ function liftPlan() {
     t.hidden ? '0px' : `${Math.round(innerHeight - t.getBoundingClientRect().top + 8)}px`);
 }
 
+$('findChip').onclick = () => openFindPanel();
 $('subjectSend').onclick = () => askSubject($('subjectInput').value);
 $('subjectInput').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') askSubject(e.target.value);
@@ -1305,6 +1307,104 @@ $('subjectClose').onclick = () => {
   $('subjectThread').replaceChildren();
   showTools();
 };
+
+// -------------------------------------------------------------- go to one --
+/**
+ * Arriving in a district is not arriving at a site. Once a place is open the
+ * next question is always "take me to THAT one" — a named building, a street, a
+ * school — and until now the only way was to hunt for it by dragging.
+ *
+ * This searches what the place already knows, flies to it, and hands it over as
+ * the subject, so the thing you went to see is the thing you are talking about.
+ */
+function openFindPanel() {
+  document.querySelector('.findPanel')?.remove();
+  const panel = document.createElement('div');
+  panel.className = 'menu findPanel';
+  const r = $('placeName').getBoundingClientRect();
+  panel.style.left = `${Math.max(8, r.left)}px`;
+  panel.style.top = `${r.bottom + 8}px`;
+  panel.style.width = 'min(360px, calc(100vw - 24px))';
+
+  const label = document.createElement('div');
+  label.className = 'menuLabel';
+  label.textContent = 'Go to something in this place';
+  const input = document.createElement('input');
+  input.className = 'nameInput';
+  input.placeholder = 'a building, a street, a shop…';
+  const results = document.createElement('div');
+  panel.append(label, input, results);
+  document.body.append(panel);
+  input.focus();
+
+  const named = S.world.entities()
+    .filter((e) => (e.name || e.use) && !['opening', 'furniture', 'room'].includes(e.type));
+
+  const show = (q) => {
+    results.replaceChildren();
+    const needle = q.trim().toLowerCase();
+    const scored = named.map((e) => {
+      const hay = `${e.name || ''} ${e.use || ''} ${e.type}`.toLowerCase();
+      if (!needle) return { e, score: e.name ? 1 : 0.4 };
+      if (!hay.includes(needle)) return null;
+      return { e, score: (e.name || '').toLowerCase().startsWith(needle) ? 3 : 2 };
+    }).filter(Boolean);
+
+    const ring = (e) => S.world.ringOf(e);
+    scored.sort((a, b) => b.score - a.score
+      || Math.abs(G.area(ring(b.e) || [])) - Math.abs(G.area(ring(a.e) || [])));
+
+    for (const { e } of scored.slice(0, 12)) {
+      const rg = ring(e);
+      const b = document.createElement('button');
+      const area = rg ? `${Math.abs(G.area(rg)).toFixed(0)} m²` : '';
+      const { fall } = rg ? heightOf(e) : { fall: 0 };
+      b.innerHTML = `${escapeHTML(e.name || e.use || e.type)}`
+        + `<span class="sub">${e.type}${area ? ` · ${area}` : ''}`
+        + `${fall > 0.5 ? ` · on ground falling ${fall.toFixed(1)} m` : ''}</span>`;
+      b.onclick = () => { panel.remove(); goToEntity(e.id); };
+      results.append(b);
+    }
+    if (!scored.length) {
+      const none = document.createElement('div');
+      none.className = 'importStatus';
+      none.textContent = `nothing here called “${q}”`;
+      results.append(none);
+    }
+  };
+  show('');
+  input.oninput = () => show(input.value);
+  input.onkeydown = (ev) => {
+    if (ev.key === 'Escape') panel.remove();
+    if (ev.key === 'Enter') results.querySelector('button')?.click();
+  };
+  setTimeout(() => document.addEventListener('pointerdown', function off(ev) {
+    if (!panel.contains(ev.target)) { panel.remove(); document.removeEventListener('pointerdown', off); }
+  }), 0);
+}
+
+/** Fly to one thing and make it the subject — arriving and attending are one act. */
+function goToEntity(id) {
+  const e = S.world.get(id);
+  const ring = e && S.world.ringOf(e);
+  if (!ring) return;
+  const c = G.centroid(ring);
+  const ob = G.orientedBounds(ring);
+  S.cam.target = [c[0], c[1], S.world.place.groundAt(c[0], c[1])];
+  // close enough to judge it against its ground, far enough to see what it meets
+  S.cam.dist = Math.max(35, Math.min(320, Math.max(ob.width, ob.depth) * 2.6));
+  S.cam.pitch = 0.42;
+  clampCamera(); updateFidelity();
+  S.selection = new Set([id]);
+  S.dirty = true;
+  showTools();
+  const { height, fall } = heightOf(e);
+  toast(fall > 0.5
+    ? `${e.name || e.type} — ${height.toFixed(1)} m on ground that falls ${fall.toFixed(1)} m across it.`
+    : `${e.name || e.type}.`);
+}
+
+const escapeHTML = (v) => String(v).replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
 
 // ------------------------------------------------------------------- setup --
 // The key belongs on the page, not three gestures down. CREO works without one,
@@ -1742,6 +1842,7 @@ addEventListener('keydown', (ev) => {
   else if (k === 'b') showBranches();
   else if (k === 'l') { S.labels = S.labels === false; S.dirty = true; toast(S.labels === false ? 'Names hidden.' : 'Names shown.'); }
   else if (k === 'f') frameAll();
+  else if (k === 'g') openFindPanel();
   else if (k === 'm') $('planBtn').click();
   else if (k === '?' || (k === '/' && ev.shiftKey)) { ev.preventDefault(); openHelp(); }
   else if (k === 'n') openNote();
@@ -1842,7 +1943,7 @@ window.CREO = {
   interpret: (t) => interpret(t, context()),
   plan: (t) => { const c = context(); return plan(S.world, interpret(t, c), c); },
   select: (ids) => { S.selection = new Set(ids); S.dirty = true; showTools(); },
-  frameAll, openNote, openHelp, runAssistant, setMode: setMode_,
+  frameAll, openNote, openHelp, runAssistant, setMode: setMode_, openFindPanel, goToEntity,
   openSetup: openAIPanel, askSubject, showTools, rankModel, captureView, PREFERRED,
   _minimap: () => minimap,
   pointAt: (p) => { S.pointer = p; },
