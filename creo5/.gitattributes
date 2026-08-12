@@ -1,0 +1,13 @@
+# GENERATED, AND UNMERGEABLE BY HAND.
+#
+# A place file is a megabyte of coordinates and base64 heights. If two branches
+# both regenerate one, git will hand back a conflict no person can resolve —
+# and resolving it by picking a side is right, because the file is not authored,
+# it is produced by tools/site.mjs from public data.
+#
+# Marked binary so git stops pretending a three-way text merge is meaningful,
+# and union-free so a conflict is an obvious "regenerate this" rather than a
+# corrupted hybrid that still parses.
+places/*.json -diff -merge
+study.json    -diff -merge
+site-fit.json -diff -merge

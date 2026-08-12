@@ -1,0 +1,7 @@
+
+# Derived, and heavy. report.html is 8.8 MB of embedded imagery and data/*.png
+# is another 10 MB; git keeps every version of a binary forever, so committing
+# these makes every future clone pay for every render anybody ever made. They
+# are outputs — regenerate them, do not version them.
+report.html
+data/*.png
