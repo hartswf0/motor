@@ -3,10 +3,26 @@
 // BASE UNIT IS THE INCH. Everything in the model is an integer or simple
 // fraction of inches. Elevations are inches above PROJECT DATUM.
 //
-// PROJECT DATUM (Z = 0) is assumed site elevation 3,412 ft AMSL and is set at
-// the LOWER LEVEL finished floor. All z values in the model are inches above
-// that. See docs/01-site-facts-register.md — the AMSL number is an ASSUMPTION
-// pending survey; the *relative* geometry does not depend on it.
+// PROJECT DATUM (Z = 0) is set at the LOWER LEVEL finished floor, and every z
+// in the model is inches above it. The datum is LOCAL: relative geometry does
+// not depend on what it correlates to in feet above sea level, which is why
+// nothing here moved when that correlation turned out to be wrong.
+//
+// It was assumed to be 3,412 ft AMSL. Measured at the coordinate the client
+// gave, the ground is about **2,364 ft** — roughly 1,050 ft lower (docs/01 M-1).
+//
+// WHAT THAT DOES AND DOES NOT INVALIDATE. Not one dimension, level, section or
+// plan: they are all relative to this datum. But every argument in the package
+// that reasoned FROM the altitude — ground snow load, design temperature,
+// freeze depth, the ice-storm case for standby power, and the freeze rule that
+// keeps plumbing out of exterior walls — was made at 3,400 ft and has not been
+// recomputed at 2,364 ft. Those arguments are still directionally right (this
+// is a cold mountain site in either case) and their NUMBERS are unverified.
+//
+// Prose elsewhere in the model still says "3,400 ft" — in the scheme critiques,
+// the precedent notes and the VSM commentary. Those are a record of what was
+// argued at the time and are deliberately not rewritten; the correction lives
+// here and in docs/01, where a reader looks for facts rather than for history.
 
 export const IN = 1;
 export const FT = 12;

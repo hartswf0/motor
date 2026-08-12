@@ -20,13 +20,72 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { ft, rect, polyArea, sf } from './units.mjs';
+import { SITE_CONTEXT } from './site-context.mjs';
 import { RIB_ROOF, RIB_ROOF_FLOOR } from './structure.mjs';
 
+// ── THE PARCEL ───────────────────────────────────────────────────────────────
+/**
+ * The client gave a coordinate. Until then this project had four known facts
+ * and no ground; everything about the hill was assumed. See K-5 in
+ * docs/01-site-facts-register.md.
+ *
+ * The terrain below is MEASURED, not assumed — but measured at 31 m, which is
+ * the resolution of a public DEM and not a survey. It settles which way the
+ * hill faces and roughly how steep it is. It does not settle where the bench
+ * is, where the rock is, or where a house can actually stand.
+ */
+export const SITE = {
+  // ONE coordinate, from the parcel record in model/site-context.mjs. This file
+  // briefly carried its own — copied out of CREO, which had parsed the seconds
+  // as 14.16" rather than 14.2" and landed 1.2 m away. Two declarations of one
+  // number is the fault this project keeps finding in itself; 1.2 m does not
+  // matter and a second source does.
+  get lat() { return SITE_CONTEXT.anchor.lat; },     // 36°17'14.2"N
+  get lon() { return SITE_CONTEXT.anchor.lon; },     // 81°55'30.4"W
+  source: 'Client, 2026-08-11 — parcel record TN-JOHNSON-100-064.03',
+  // ── the jurisdiction, which is NOT the one on the drawings ───────────────
+  // Every title block in this set says WATAUGA COUNTY, NORTH CAROLINA. The
+  // parcel record says Johnson County, TENNESSEE. A North Carolina statute has
+  // no force in Tennessee, so this is not a caption error: it changes the code
+  // basis, the permitting authority, and whether the NC Mountain Ridge
+  // Protection Act assumed at docs/01 A-06 applies at all.
+  county: 'JOHNSON', state: 'TN',
+  parcelId: '100 064.03',
+  deedAcres: 29.34,
+  // ── measured off the DEM at that coordinate ──────────────────────────────
+  elevationFtAmsl: 2364,      // 720.5 m — NOT the 3,412 ft this project assumed
+  fallsToAzimuth: 5,          // degrees from true north: the land falls NORTH
+  crossSlopePctMeasured: 30,  // at a ±92 m window; 40% at ±31 m, 27% at ±185 m
+  terrain: 'terrarium z12 (~31 m/px), AWS open data, via CREO (hartswf0/motor)',
+  corroboration: 'The Watauga River is mapped 298 m NORTH of the anchor. Rivers ' +
+                 'sit in valleys, so an independent source agrees the fall is north.',
+  note: 'MEASURED at 31 m. Confirm by survey before anything is priced or dug.',
+};
+
 // ── Orientation ──────────────────────────────────────────────────────────────
+/**
+ * ⚠ CONTRADICTED BY THE SITE. Left standing deliberately, and not rotated.
+ *
+ * This project assumed the downhill face — the glass, the view, the winter sun,
+ * the whole parti — looked SSE at azimuth 160°. At the coordinate the client
+ * gave, the land falls almost due NORTH (354°–34° depending on the window, 5°
+ * at building scale). The assumed view face points INTO the hill.
+ *
+ * docs/01 wrote this project's own alarm for exactly this case, at A-03:
+ *
+ *   "If the real view is north or the slope faces north, the plan must be
+ *    RECONSIDERED, NOT ROTATED."
+ *
+ * So these numbers are NOT quietly re-pointed. Spinning the azimuth would make
+ * every drawing self-consistent and every drawing wrong: on a north slope the
+ * view and the winter sun are on OPPOSITE faces, and no rotation reconciles
+ * them. That is a design decision about what this house is, not a constant.
+ */
 export const ORIENTATION = {
   longAxisAzimuth: 70,        // +X direction, degrees from true north
   viewFaceAzimuth: 160,       // -Y face normal (SSE) — glass wall + terrace
   uphillFaceAzimuth: 340,     // +Y face normal (NNW) — cut, motor court, service
+  status: 'CONTRADICTED by SITE.fallsToAzimuth — see docs/01 A-03 and docs/09',
   note: 'ASSUMED. Must be reset from survey + a real solar/view study on the parcel.',
 };
 

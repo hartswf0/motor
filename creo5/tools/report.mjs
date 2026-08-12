@@ -663,6 +663,13 @@ None of those is a decision this study makes.</p>
     <li><b>The ground is not a survey.</b> Elevation is ${esc(P.meta.elevation)}, interpolated to building
     scale. It is honest about relief and unreliable about any single metre. Tennessee's LiDAR would firm every
     grade in this document before anyone should believe one to the percent.</li>
+    <li><b>The drawings name the wrong state.</b> Every title block in the design set says WATAUGA COUNTY,
+    NORTH CAROLINA; the parcel record says ${esc(mod.SITE?.county || 'Johnson')} County, ${esc(mod.SITE?.state || 'TN')}.
+    That is not a caption error — it changes the code basis, the permitting authority, and whether the NC
+    Mountain Ridge Protection Act applies at all. The design module records the correction${mod.SITE
+      ? `, along with a site elevation measured at ${mod.SITE.elevationFtAmsl} ft rather than the 3,412 ft the
+      package assumed: a thousand feet, and with it the ground snow load, the design temperature and the
+      freeze depth, none of which has been recomputed` : ''}.</li>
     <li><b>The boundary is the assessor's.</b> The deed says ${parcel.props.deedAcres} acres and the drawn ring measures
     ${parcel.props.drawnAcres}; where they differ this document does not choose. Nothing here replaces a surveyor.</li>
     <li><b>The searches state their own resolution.</b> The drive was searched at ${at15.cell?.toFixed(0) || 8} m over the ground and
