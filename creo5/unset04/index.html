@@ -6,72 +6,17 @@
 <meta name="theme-color" content="#050705">
 <title>CREO × UNSET 04 — Henry Mountain</title>
 <meta name="description" content="Drive, sketch and build possible worlds on the real Henry House parcel.">
-<link rel="stylesheet" href="./app.css?v=5">
+<link rel="stylesheet" href="./app.css">
 </head>
 <body>
 <canvas id="gl" aria-label="CREO UNSET 04 game world"></canvas>
-
-<header id="hudTop">
-  <div class="brand"><b>CREO × UNSET 04</b><span id="modeLabel">DRIVE</span></div>
-  <div id="telemetry"><span id="speed">0</span><small>MPH</small><span id="grade">0%</span><small>GRADE</small></div>
-</header>
-
-<div id="status" aria-live="polite">
-  <span id="physicsStatus">JOLT · BOOTING</span>
-  <span id="worldStatus">CREO · LOADING</span>
-</div>
-
-<div id="crosshair" aria-hidden="true"></div>
-<div id="hint">WASD / LEFT STICK · SPACE BRAKE · C CAMERA · M MAP · B BUILD · R RECOVER</div>
-
-<div id="mobileDrive" aria-label="Driving controls">
-  <div id="stickZone"><div id="stick"></div></div>
-  <button id="handbrake" type="button">BRAKE</button>
-</div>
-
-<nav id="dock" aria-label="Game modes">
-  <button data-mode="drive" class="on" type="button">DRIVE</button>
-  <button data-mode="map" type="button">MAP</button>
-  <button data-mode="build" class="build" type="button">BUILD</button>
-  <button data-mode="world" type="button">WORLD</button>
-</nav>
-
-<section id="buildSheet" class="sheet" aria-hidden="true">
-  <div class="sheetHead"><div><b>BUILD HERE</b><small id="targetReadout">aim at the ground</small></div><button class="closeSheet" type="button" aria-label="Close">×</button></div>
-  <div class="toolRow">
-    <button data-footprint="point" class="on" type="button">POINT</button>
-    <button data-footprint="small" type="button">12 × 8 M</button>
-    <button data-footprint="large" type="button">24 × 14 M</button>
-  </div>
-  <textarea id="buildPrompt" spellcheck="false" placeholder="screened rain pavilion we can drive underneath, with a loft and a ramp onto the roof"></textarea>
-  <div class="buildRow">
-    <button id="basicBuild" type="button">BASIC</button>
-    <button id="aiBuild" class="primary" type="button">AI GHOST</button>
-  </div>
-  <div id="ghostActions" hidden>
-    <button id="rejectGhost" type="button">REJECT</button>
-    <button id="commitGhost" class="primary" type="button">BUILD</button>
-  </div>
-  <p id="buildNote">AI proposes constrained primitives. Deterministic code checks scale, terrain and access before anything becomes physical.</p>
-</section>
-
-<section id="worldSheet" class="sheet" aria-hidden="true">
-  <div class="sheetHead"><div><b>WORLD</b><small>one metre = one world unit</small></div><button class="closeSheet" type="button" aria-label="Close">×</button></div>
-  <label class="field"><span>OPENAI API KEY</span><input id="apiKey" type="password" autocomplete="off" placeholder="sk-…"></label>
-  <label class="field"><span>MODEL</span><input id="modelName" type="text" value="gpt-5.1"></label>
-  <div class="toggleGrid">
-    <label><input id="treesToggle" type="checkbox" checked> FOREST</label>
-    <label><input id="driveToggle" type="checkbox" checked> EXISTING DRIVE</label>
-    <label><input id="parcelToggle" type="checkbox" checked> PARCEL</label>
-    <label><input id="houseToggle" type="checkbox" checked> HENRY HOUSE</label>
-  </div>
-  <div class="buildRow"><button id="sitePrev" type="button">PREV SITE</button><button id="siteNext" type="button">NEXT SITE</button></div>
-  <div id="siteReadout" class="readout"></div>
-</section>
-
-<div id="toast" aria-live="polite"></div>
-<div id="boot"><b>CREO × UNSET 04</b><span>starting renderer</span><div class="bootBar"><i></i></div></div>
-
-<script type="module" src="./app.js?v=5"></script>
-</body>
-</html>
+<header id="hudTop"><div class="brand"><b>CREO × UNSET 04</b><span id="modeLabel">DRIVE</span></div><div id="telemetry"><span id="speed">0</span><small>MPH</small><span id="grade">0%</span><small>GRADE</small></div></header>
+<div id="status" aria-live="polite"><span id="physicsStatus">JOLT · WORKER BOOT</span><span id="worldStatus">RENDERER · BOOT</span></div>
+<div id="crosshair" aria-hidden="true"></div><div id="hint">WASD / LEFT STICK · SPACE BRAKE · C CAMERA · M MAP · B BUILD · R RECOVER</div>
+<div id="mobileDrive" aria-label="Driving controls"><div id="stickZone"><div id="stick"></div></div><button id="handbrake" type="button">BRAKE</button></div>
+<nav id="dock" aria-label="Game modes"><button data-mode="drive" class="on" type="button">DRIVE</button><button data-mode="map" type="button">MAP</button><button data-mode="build" class="build" type="button">BUILD</button><button data-mode="world" type="button">WORLD</button></nav>
+<section id="buildSheet" class="sheet" aria-hidden="true"><div class="sheetHead"><div><b>BUILD HERE</b><small id="targetReadout">aim at the ground</small></div><button class="closeSheet" type="button" aria-label="Close">×</button></div><div class="toolRow"><button data-footprint="point" class="on" type="button">POINT</button><button data-footprint="small" type="button">12 × 8 M</button><button data-footprint="large" type="button">24 × 14 M</button></div><textarea id="buildPrompt" spellcheck="false" placeholder="screened rain pavilion we can drive underneath, with a loft and a ramp onto the roof"></textarea><div class="buildRow"><button id="basicBuild" type="button">BASIC</button><button id="aiBuild" class="primary" type="button">AI GHOST</button></div><div id="ghostActions" hidden><button id="rejectGhost" type="button">REJECT</button><button id="commitGhost" class="primary" type="button">BUILD</button></div><p id="buildNote">AI proposes constrained primitives. Deterministic code checks scale, terrain and access before anything becomes physical.</p></section>
+<section id="worldSheet" class="sheet" aria-hidden="true"><div class="sheetHead"><div><b>WORLD</b><small>one metre = one world unit</small></div><button class="closeSheet" type="button" aria-label="Close">×</button></div><label class="field"><span>OPENAI API KEY</span><input id="apiKey" type="password" autocomplete="off" placeholder="sk-…"></label><label class="field"><span>MODEL</span><input id="modelName" type="text" value="gpt-5.1"></label><div class="toggleGrid"><label><input id="treesToggle" type="checkbox" checked> FOREST</label><label><input id="driveToggle" type="checkbox" checked> EXISTING DRIVE</label><label><input id="parcelToggle" type="checkbox" checked> PARCEL</label><label><input id="houseToggle" type="checkbox" checked> HENRY HOUSE</label></div><div class="buildRow"><button id="sitePrev" type="button">PREV SITE</button><button id="siteNext" type="button">NEXT SITE</button></div><div id="siteReadout" class="readout"></div></section>
+<div id="toast" aria-live="polite"></div><div id="boot"><b>CREO × UNSET 04</b><span>streaming the real parcel into a game world</span><div class="bootBar"><i></i></div></div>
+<script type="module" src="./app-fast.js?v=20260812b"></script>
+</body></html>
