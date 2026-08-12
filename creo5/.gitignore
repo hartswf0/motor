@@ -5,3 +5,4 @@
 # are outputs — regenerate them, do not version them.
 report.html
 data/*.png
+data/*.png.txt
