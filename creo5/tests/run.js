@@ -32,6 +32,7 @@ import { toGeoJSON, fromGeoJSON } from '../src/world/export.js';
 import { consequenceOf } from '../src/sim/consequence.js';
 import { runWater } from '../src/sim/water.js';
 import { reachability, buildGraph, route } from '../src/sim/movement.js';
+import { planAccess, nearestOnNetwork } from '../src/world/access.js';
 
 let passed = 0, failed = 0, groupName = '';
 const failures = [];
@@ -2063,6 +2064,128 @@ group('references', () => {
     eq(ordered[1], 'gpt-5.6-luna', 'luna second');
     eq(ordered[2], 'gpt-5.6-terra', 'terra third');
     eq(ordered[ordered.length - 1], 'gpt-4o', 'gpt-4o is a fallback, never a default');
+  });
+});
+
+// ================================================================= ACCESS ====
+// The fifth question — can you get there? — measured on the real parcel.
+//
+// Every test here was seen to fail on the first working version of access.js,
+// and all five failures were one cause wearing five faces: the search corridor
+// was the bounding box of EVERY seed on every way, this parcel's frontage is a
+// 23 km centreline, and the coarsening rule then forced a 107 m cell whatever
+// was asked for. One cell was 11,533 m²; the whole 29-acre parcel was ten cells.
+// Nothing said so, and every number downstream was a fact about that grid.
+
+group('access — the fifth question', () => {
+  const file = new URL('../places/hwy-321-johnson-064-03.json', import.meta.url);
+  if (!existsSync(file)) return;
+  const w = World.load(readFileSync(file, 'utf8'));
+  const ring = w.ringOf(w.entities().find((e) => e.type === 'parcel'));
+  const gate = [-80, 378];
+
+  test('the search runs at the resolution it was asked for, and says which', () => {
+    const p = planAccess(w, gate, { maxGrade: 0.15, keepInside: ring, cell: 8 });
+    assert(Number.isFinite(p.cell), 'a plan that will not say what cell it searched at');
+    assert(p.cell <= 8 * 2.5,
+      `asked for 8 m and searched at ${p.cell.toFixed(0)} m — the map is setting the resolution`);
+    // and a parcel must be worth more than a handful of cells, or a switchback
+    // cannot be expressed at all
+    assert(G.area(ring) / (p.cell * p.cell) > 300,
+      `the parcel is only ${Math.round(G.area(ring) / (p.cell * p.cell))} search cells across`);
+  });
+
+  test('a grade cap is a cap, including on the last hop to the gate', () => {
+    // The walk-back used to overwrite its final point with the destination,
+    // which replaced a proven grid point with an unchecked one: a 10% plan
+    // reported 11.7%, all of it in that hop.
+    for (const cap of [0.08, 0.10, 0.12, 0.15, 0.20]) {
+      for (const to of [[-97, 262], [-17, 242], [-60, 300], gate]) {
+        const p = planAccess(w, to, { maxGrade: cap, keepInside: ring, cell: 10 });
+        if (!p.possible || p.onNetwork || p.apron) continue;
+        assert(p.maxG <= cap + 1e-9,
+          `a ${Math.round(cap * 100)}% plan reports ${(p.maxG * 100).toFixed(1)}% at ${to}`);
+      }
+    }
+  });
+
+  test('keepInside binds: a way "inside the boundary" is inside the boundary', () => {
+    // Its destination exemption is 2.5 cells. At a 107 m cell that was 268 m
+    // across a parcel 459 m wide, so the constraint stopped meaning anything:
+    // the drive reported as 413 m at 8% inside the boundary ran 285 m across
+    // the neighbour.
+    let found = 0;
+    for (const [to, cap] of [[[-97, 262], 0.20], [[-17, 242], 0.20], [gate, 0.20], [gate, 0.25]]) {
+      const p = planAccess(w, to, { maxGrade: cap, keepInside: ring, cell: 10 });
+      if (!p.possible || p.onNetwork || p.apron) continue;
+      found++;
+      const out = p.stations.filter((s) => !G.pointInRing(s.p, ring));
+      const worst = out.reduce((m, s) => Math.max(m, G.closestOnRing(s.p, ring).d), 0);
+      assert(worst < p.cell * 2,
+        `${out.length}/${p.stations.length} points up to ${worst.toFixed(0)} m outside the parcel it was told to stay in`);
+    }
+    assert(found > 0, 'no feasible on-parcel plan to check');
+  });
+
+  test('the way that gets built is the way that was proven', () => {
+    // `stations` is what driveEntity publishes and what settleDriveBed carves,
+    // so it is not presentation. Chaikin removed a quarter of the length of a
+    // switchback route while the profile was draped on by arc-length fraction:
+    // a plan reporting 19% over 704 m drew a 519 m way reaching 31%.
+    let found = 0;
+    for (const [to, cap] of [[gate, 0.20], [gate, 0.25], [[-97, 262], 0.20], [[-60, 300], 0.25]]) {
+      const p = planAccess(w, to, { maxGrade: cap, keepInside: ring, cell: 8 });
+      if (!p.possible || p.onNetwork || p.apron) continue;
+      found++;
+      let drawnLen = 0, drawnMax = 0;
+      for (let i = 1; i < p.stations.length; i++) {
+        const run = G.dist(p.stations[i - 1].p, p.stations[i].p);
+        drawnLen += run;
+        if (run > 0.5) drawnMax = Math.max(drawnMax, Math.abs(p.stations[i].z - p.stations[i - 1].z) / run);
+      }
+      near(drawnLen, p.length, p.length * 0.05,
+        `the drawn way is ${Math.round(drawnLen)} m but ${Math.round(p.length)} m was proven`);
+      assert(drawnMax <= cap * 1.15,
+        `the drawn way reaches ${(drawnMax * 100).toFixed(0)}% where the plan says ${(p.maxG * 100).toFixed(0)}%`);
+    }
+    assert(found > 0, 'no feasible plan to check');
+  });
+
+  test('"a way already crosses here" is about the carriageway, not the grid', () => {
+    // `length < cell * 2` inherited the search resolution: at 107 m it meant
+    // "within 215 m of any way", and four candidate sites 5-9 m clear of a 4 m
+    // farm track were reported as having the house in the road.
+    for (const at of [[103, -318], [83, -318], [83, -298], [3, -18]]) {
+      const p = planAccess(w, at, { maxGrade: 0.15, keepInside: ring, cell: 8 });
+      const n = nearestOnNetwork(w, at);
+      const inside = n.d <= (n.entity.width || 4) / 2;
+      assert(!p.onNetwork || inside,
+        `${at} is ${n.d.toFixed(1)} m from the centreline of a ${n.entity.width} m way — not in the road`);
+    }
+  });
+
+  test('the search leaves from the drive that exists, not from the road OSM knows', () => {
+    // THIS TEST ONCE ASSERTED THE OPPOSITE, and was right to fail when it did.
+    //
+    // It read: "the 15% refusal at the garage bench must survive". That refusal
+    // was real about the network CREO had and false about the land — OpenStreetMap
+    // has never recorded this property's private drive, so the search was looking
+    // for a way up a hillside the owner already drives up. data/drive-traced.json
+    // is that drive, off the state's own basemap; adopt-drive.mjs puts it in the
+    // world; and from that commit the bench is reachable.
+    //
+    // The lesson is kept rather than the verdict: a refusal is only ever as good
+    // as the network it searched, so what this now guards is that the traced
+    // drive is IN that network and that the search actually uses it.
+    const traced = w.entities().filter((e) => String(e.id).startsWith('traced-'));
+    assert(traced.length >= 1,
+      'the traced drive is not in this place — run `node tools/adopt-drive.mjs --commit`');
+    for (const t of traced) assert(t.epistemic === 'TRACED', `${t.id} does not say it was traced`);
+    const p = planAccess(w, gate, { maxGrade: 0.20, keepInside: ring, cell: 8, maxPops: 400000 });
+    assert(p.possible, 'no way to the gate at 20% even with the built drive in the network');
+    const names = new Set(traced.map((t) => t.name || t.use));
+    assert(names.has(p.fromName) || p.fromName === 'driveway',
+      `the search left from "${p.fromName}", not from the drive that exists`);
   });
 });
 
